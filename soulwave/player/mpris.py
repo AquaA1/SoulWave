@@ -110,6 +110,9 @@ class MPRISPlayer(BasePlayer):
         self._status_hold_until: float = 0.0
         self._status_hold_target: Optional[PlaybackStatus] = None
 
+        # Track generation / epoch tracking
+        self._track_epoch: int = 0
+
         if self.use_dbus:
             self._init_dbus()
 
@@ -247,7 +250,12 @@ class MPRISPlayer(BasePlayer):
             cmd_type, args = item
             try:
                 if cmd_type == "seek":
-                    offset_us, desired_pos, seq = args
+                    offset_us, desired_pos, seq, epoch = args
+                    # If track changed before command ran, discard obsolete seek
+                    with self._lock:
+                        if epoch != self._track_epoch:
+                            continue
+
                     t0 = time.monotonic()
                     err = None
                     try:
@@ -261,12 +269,17 @@ class MPRISPlayer(BasePlayer):
                         seek_type="seek",
                         target_pos=desired_pos,
                         seq=seq,
+                        epoch=epoch,
                         t_start=t0,
                         immediate_err=err,
                     )
 
                 elif cmd_type == "set_position":
-                    track_id, pos_us, desired_pos, seq = args
+                    track_id, pos_us, desired_pos, seq, epoch = args
+                    with self._lock:
+                        if epoch != self._track_epoch:
+                            continue
+
                     t0 = time.monotonic()
                     err = None
                     try:
@@ -281,6 +294,7 @@ class MPRISPlayer(BasePlayer):
                         seek_type="set_position",
                         target_pos=desired_pos,
                         seq=seq,
+                        epoch=epoch,
                         t_start=t0,
                         immediate_err=err,
                     )
@@ -328,10 +342,16 @@ class MPRISPlayer(BasePlayer):
         seek_type: str,
         target_pos: float,
         seq: int,
+        epoch: int,
         t_start: float,
         immediate_err: Optional[str] = None,
     ) -> None:
         """Verifies that the player actually reached the seek target."""
+        with self._lock:
+            # If track changed while seek was executing, discard verification
+            if epoch != self._track_epoch:
+                return
+
         if immediate_err:
             with self._lock:
                 self._last_seek_result = SeekVerificationResult(
@@ -366,21 +386,23 @@ class MPRISPlayer(BasePlayer):
                     if abs(current_s - target_pos) <= 3.0:
                         confirmed = True
                         with self._lock:
-                            self._interpolator.confirm_seek(current_s)
+                            if epoch == self._track_epoch and seq == self._interpolator.get_seek_seq():
+                                self._interpolator.confirm_seek(current_s)
             except Exception:
                 pass
 
         elapsed = time.monotonic() - t_start
         with self._lock:
-            self._last_seek_result = SeekVerificationResult(
-                success=True,  # Dispatched successfully to D-Bus; interpolator maintains target
-                seek_type=seek_type,
-                target_position=target_pos,
-                resulting_position=final_pos,
-                elapsed_seconds=elapsed,
-                error=None,
-                player_name=self.player_name or "active",
-            )
+            if epoch == self._track_epoch:
+                self._last_seek_result = SeekVerificationResult(
+                    success=True,  # Dispatched successfully to D-Bus; interpolator maintains target
+                    seek_type=seek_type,
+                    target_position=target_pos,
+                    resulting_position=final_pos,
+                    elapsed_seconds=elapsed,
+                    error=None,
+                    player_name=self.player_name or "active",
+                )
 
     # --- Signal Handlers ---
 
@@ -515,8 +537,13 @@ class MPRISPlayer(BasePlayer):
                 duration_sec = self._last_state.metadata.duration_seconds
 
             if is_new_track:
-                # Track identity changed! Reset interpolator and position to start cleanly
-                self._interpolator.reset_for_new_track(initial_position=0.0, duration=duration_sec)
+                # Track identity changed! Advance epoch and reset interpolator cleanly
+                self._track_epoch += 1
+                self._interpolator.reset_for_new_track(
+                    initial_position=0.0,
+                    duration=duration_sec,
+                    epoch=self._track_epoch,
+                )
                 self._last_state.position_seconds = 0.0
 
             art_url_val = str(meta.get("mpris:artUrl", "")) or None
@@ -538,6 +565,7 @@ class MPRISPlayer(BasePlayer):
                 self._last_state.status,
                 duration_sec,
                 is_authoritative=is_new_track,
+                epoch=self._track_epoch,
             )
 
         if "Position" in props:
@@ -547,6 +575,7 @@ class MPRISPlayer(BasePlayer):
                     pos_sec,
                     self._last_state.status,
                     self._last_state.metadata.duration_seconds,
+                    epoch=self._track_epoch,
                 )
                 self._last_state.position_seconds = pos_sec
             except (ValueError, TypeError):
@@ -659,7 +688,12 @@ class MPRISPlayer(BasePlayer):
         )
 
         if is_new_track:
-            self._interpolator.reset_for_new_track(initial_position=position_sec, duration=duration_sec)
+            self._track_epoch += 1
+            self._interpolator.reset_for_new_track(
+                initial_position=position_sec,
+                duration=duration_sec,
+                epoch=self._track_epoch,
+            )
 
         metadata = TrackMetadata(
             title=title_str,
@@ -675,6 +709,7 @@ class MPRISPlayer(BasePlayer):
             status,
             duration_sec,
             is_authoritative=is_new_track,
+            epoch=self._track_epoch,
         )
 
         state = PlayerState(
@@ -731,7 +766,7 @@ class MPRISPlayer(BasePlayer):
         offset_us = int(round(offset_seconds * 1_000_000.0))
 
         if self.use_dbus and self._running:
-            self._cmd_queue.put(("seek", (offset_us, desired, seq)))
+            self._cmd_queue.put(("seek", (offset_us, desired, seq, self._track_epoch)))
         else:
             # playerctl fallback
             sign = "+" if offset_seconds >= 0 else ""
@@ -761,7 +796,7 @@ class MPRISPlayer(BasePlayer):
         pos_us = int(round(clamped * 1_000_000.0))
 
         if self.use_dbus and self._running:
-            self._cmd_queue.put(("set_position", (track_id, pos_us, clamped, seq)))
+            self._cmd_queue.put(("set_position", (track_id, pos_us, clamped, seq, self._track_epoch)))
         else:
             self._run_cmd(["position", f"{clamped:.1f}"])
 
