@@ -1,0 +1,83 @@
+/* Soulwave TUI Stylesheet */
+
+Screen {
+    layout: vertical;
+    overflow: hidden;
+    background: #0f172a;
+    color: #f8fafc;
+}
+
+#top-bar {
+    height: 1;
+    dock: top;
+    background: #1e293b;
+    color: #94a3b8;
+    padding: 0 1;
+}
+
+#main-container {
+    height: 1fr;
+    layout: horizontal;
+    padding: 0 1;
+}
+
+#left-panel {
+    width: 38;
+    height: 100%;
+    align: center middle;
+    border-right: tall #334155;
+    padding: 0 1;
+}
+
+#right-panel {
+    width: 1fr;
+    height: 100%;
+    layout: vertical;
+    padding: 0 1;
+}
+
+#now-playing-container {
+    height: auto;
+    border-bottom: solid #334155;
+    padding: 1 0;
+}
+
+#lyrics-container {
+    height: 1fr;
+    padding: 1 0;
+}
+
+#bottom-controls {
+    height: auto;
+    dock: bottom;
+    background: #1e293b;
+    padding: 1 1;
+    border-top: solid #334155;
+}
+
+#visualizer-container {
+    height: 1;
+    margin: 1 0;
+}
+
+/* --- Mini Mode Styles --- */
+.mini-mode #top-bar {
+    display: none;
+}
+
+.mini-mode #left-panel {
+    width: 22;
+    border-right: none;
+}
+
+.mini-mode #lyrics-container {
+    display: none;
+}
+
+.mini-mode #visualizer-container {
+    display: none;
+}
+
+.mini-mode #bottom-controls {
+    padding: 0 1;
+}
