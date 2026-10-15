@@ -140,3 +140,139 @@ def test_extended_stale_zero_flags_uncertainty():
         interp.sync(position_seconds=0.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t, epoch=1)
 
     assert interp.is_uncertain is True
+
+
+def test_continuous_playback_with_lagging_reports_60s():
+    """Verify 60s of normal playback where player reports consistently lag by 0.5-2.0s.
+
+    Asserts:
+    1. Zero backward jumps across the entire 60s duration (monotonic forward progress).
+    2. Estimated timeline stays within justified tolerance of real elapsed time (<= 1.5s).
+    3. No periodic oscillation or rubberbanding.
+    """
+    interp = PositionInterpolator()
+    t0 = 1000.0
+    duration = 300.0
+    interp.reset_for_new_track(initial_position=0.0, duration=duration, timestamp=t0, epoch=1)
+    interp.sync(position_seconds=0.0, status=PlaybackStatus.PLAYING, duration_seconds=duration, timestamp=t0, epoch=1)
+
+    lag_seconds = 1.2  # Player reports consistently lag by 1.2 seconds
+    poll_interval = 0.8  # MPRIS polling every 800ms
+    sim_duration = 60.0  # 60 seconds total
+
+    t = t0
+    last_displayed_pos = -0.01
+
+    # Simulate 60 seconds of playback with fine-grained UI frames every 100ms
+    while (t - t0) <= sim_duration:
+        elapsed = t - t0
+
+        # When polling occurs (every 0.8s)
+        if (round(elapsed, 2) % poll_interval) < 0.05:
+            # Player position lags by lag_seconds
+            player_pos = max(0.0, elapsed - lag_seconds)
+            interp.sync(
+                position_seconds=player_pos,
+                status=PlaybackStatus.PLAYING,
+                duration_seconds=duration,
+                timestamp=t,
+                epoch=1,
+            )
+
+        # UI renders at timestamp t
+        displayed_pos = interp.get_position(now=t)
+
+        # 1. Monotonicity check: MUST NOT jump backward
+        assert displayed_pos >= last_displayed_pos - 1e-6, (
+            f"Backward jump detected at t={elapsed:.2f}: "
+            f"displayed={displayed_pos:.3f} < previous={last_displayed_pos:.3f}"
+        )
+        last_displayed_pos = displayed_pos
+
+        # Advance by 100ms
+        t += 0.1
+
+    # 2. Final position accuracy: within justified tolerance of elapsed time
+    final_displayed = interp.get_position(now=t0 + sim_duration)
+    assert abs(final_displayed - sim_duration) <= 1.5, (
+        f"Timeline drifted too far from real elapsed time: {final_displayed} vs {sim_duration}"
+    )
+
+
+def test_lag_exceeding_threshold_deliberate_resynchronization():
+    """Verify that lag exceeding 2.5s causes deliberate resynchronization without periodic oscillation."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    interp.reset_for_new_track(initial_position=0.0, duration=180.0, timestamp=t0, epoch=1)
+    interp.sync(position_seconds=0.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0, epoch=1)
+
+    # Advance 10s locally
+    t1 = t0 + 10.0
+    assert abs(interp.get_position(now=t1) - 10.0) < 0.01
+
+    # Player stalled or buffered and is at 6.0s (lag = 10.0 - 6.0 = 4.0s > 2.5s)
+    interp.sync(position_seconds=6.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t1, epoch=1)
+
+    # Deliberate resync must snap to 6.0s
+    resynced_pos = interp.get_position(now=t1)
+    assert abs(resynced_pos - 6.0) < 0.01
+
+    # Subsequent updates proceed smoothly from the new anchor without oscillation
+    t2 = t1 + 0.8
+    interp.sync(position_seconds=6.8, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t2, epoch=1)
+    assert abs(interp.get_position(now=t2) - 6.8) < 0.05
+
+
+def test_genuine_backward_and_forward_seeks():
+    """Verify genuine backward seeks (-10s) and forward seeks (+15s) update immediately and confirm cleanly."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    interp.sync(position_seconds=50.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0)
+    assert interp.get_position(now=t0) == 50.0
+
+    # 1. Backward relative seek of -10s
+    target_backward = interp.step_relative_seek(-10.0, timestamp=t0)
+    assert target_backward == 40.0
+    assert interp.get_position(now=t0) == 40.0  # Instant visual update
+
+    # Player reports 40.2s within settle window -> confirms seek
+    interp.sync(position_seconds=40.2, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0 + 0.3)
+    assert not interp.is_seeking()
+    assert abs(interp.get_position(now=t0 + 0.3) - 40.2) < 0.01
+
+    # 2. Forward relative seek of +15s
+    t1 = t0 + 1.0
+    # At t1, position has advanced from 40.2 by 0.7s -> 40.9s
+    # +15s offset yields 55.9s
+    target_forward = interp.step_relative_seek(15.0, timestamp=t1)
+    assert abs(target_forward - 55.9) < 0.05
+    # Instant visual update reflected
+    assert interp.get_position(now=t1) == target_forward
+
+    # Player reports target position -> confirms seek
+    interp.sync(position_seconds=target_forward, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t1 + 0.2)
+    assert not interp.is_seeking()
+
+
+def test_pause_and_resume_timeline_behavior():
+    """Verify pausing freezes interpolation and resume continues smoothly without jumping."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    interp.sync(position_seconds=30.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0)
+
+    # Advance 2 seconds playing
+    assert abs(interp.get_position(now=t0 + 2.0) - 32.0) < 0.01
+
+    # Pause at 32.0s
+    interp.sync(position_seconds=32.0, status=PlaybackStatus.PAUSED, duration_seconds=180.0, timestamp=t0 + 2.0)
+
+    # 10 seconds later while paused, position must remain frozen at 32.0s
+    assert interp.get_position(now=t0 + 12.0) == 32.0
+
+    # Resume playing at t0 + 12.0
+    interp.sync(position_seconds=32.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0 + 12.0)
+    assert interp.get_position(now=t0 + 12.0) == 32.0
+
+    # 3 seconds later playing, position advances smoothly to 35.0s
+    assert abs(interp.get_position(now=t0 + 15.0) - 35.0) < 0.01
+

@@ -76,7 +76,7 @@ def test_interpolator_clamping():
 
 
 def test_mpris_checks_before_seeking():
-    player = MPRISPlayer(use_dbus=False)
+    player = MPRISPlayer(player_name="isolated_test_suite", use_dbus=False)
 
     # 1. Disconnected player -> rejected
     player._last_state = PlayerState(status=PlaybackStatus.DISCONNECTED)
@@ -119,7 +119,7 @@ def test_mpris_status_and_metadata_parsers():
 
 
 def test_mpris_timeline_preservation_and_track_change():
-    player = MPRISPlayer(use_dbus=False)
+    player = MPRISPlayer(player_name="isolated_test_suite", use_dbus=False)
 
     # 1. Normal track metadata
     props1 = {
@@ -161,3 +161,85 @@ def test_mpris_timeline_preservation_and_track_change():
     player._apply_dbus_properties(props_new_track)
     assert player._last_state.metadata.title == "Song B"
     assert player._last_state.metadata.duration_seconds == 210.0
+
+
+def test_mpris_epoch_protection_against_late_polling_snapshots():
+    """Verify that late polling snapshots dispatched during an earlier track cannot overwrite the active track."""
+    player = MPRISPlayer(player_name="isolated_test_suite", use_dbus=False)
+
+    # Track 1 at 170s
+    player._apply_dbus_properties({
+        "PlaybackStatus": "Playing",
+        "Metadata": {
+            "mpris:trackid": "/org/mpris/track1",
+            "xesam:title": "Song 1",
+            "xesam:artist": "Artist 1",
+            "mpris:length": 180_000_000,
+        },
+        "Position": 170_000_000,
+    })
+    initial_epoch = player._track_epoch
+    assert player._last_state.position_seconds == 170.0
+
+    # Track 2 starts cleanly
+    player._apply_dbus_properties({
+        "Metadata": {
+            "mpris:trackid": "/org/mpris/track2",
+            "xesam:title": "Song 2",
+            "xesam:artist": "Artist 2",
+            "mpris:length": 200_000_000,
+        },
+        "Position": 0,
+    })
+    new_epoch = player._track_epoch
+    assert new_epoch > initial_epoch
+    assert player._last_state.position_seconds == 0.0
+
+    # A delayed polling snapshot from Track 1 arrives with the stale epoch
+    player._interpolator.sync(
+        position_seconds=175.0,
+        status=PlaybackStatus.PLAYING,
+        duration_seconds=180.0,
+        epoch=initial_epoch,  # Old epoch!
+    )
+
+    # Active track position remains clean at 0.0s (not overwritten with 175.0)
+    assert player._last_state.position_seconds == 0.0
+    assert abs(player._interpolator.get_position() - 0.0) < 0.05
+
+
+def test_mpris_epoch_drops_obsolete_seeks_and_verifications():
+    """Verify that pending seeks and seek verifications for older track epochs are discarded."""
+    player = MPRISPlayer(player_name="isolated_test_suite", use_dbus=False)
+    player._last_state = PlayerState(
+        status=PlaybackStatus.PLAYING,
+        can_seek=True,
+        metadata=TrackMetadata(title="Song 1", duration_seconds=180.0, track_id="/track1"),
+    )
+
+    initial_epoch = player._track_epoch
+
+    # Simulate track change to Song 2 (advances epoch)
+    player._apply_dbus_properties({
+        "Metadata": {
+            "mpris:trackid": "/track2",
+            "xesam:title": "Song 2",
+            "xesam:artist": "Artist 2",
+            "mpris:length": 240_000_000,
+        }
+    })
+    assert player._track_epoch == initial_epoch + 1
+
+    # Attempt to verify a seek dispatched during initial_epoch
+    player._verify_seek(
+        seek_type="seek",
+        target_pos=90.0,
+        seq=1,
+        epoch=initial_epoch,  # Stale epoch
+        t_start=time.monotonic(),
+        immediate_err=None,
+    )
+
+    # _last_seek_result must NOT be set for the stale epoch
+    assert player._last_seek_result is None
+

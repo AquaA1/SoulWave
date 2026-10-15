@@ -198,7 +198,7 @@ class PositionInterpolator:
             return min(interpolated, self._duration)
         return interpolated
 
-    def start_seek(self, target_seconds: float) -> float:
+    def start_seek(self, target_seconds: float, timestamp: float | None = None) -> float:
         """Initiate an absolute seek. Returns clamped desired position."""
         if self._duration > 0.0:
             target = max(0.0, min(target_seconds, self._duration))
@@ -206,13 +206,14 @@ class PositionInterpolator:
             target = max(0.0, target_seconds)
 
         self._desired_position = target
-        self._seek_time = time.monotonic()
+        self._seek_time = timestamp if timestamp is not None else time.monotonic()
         self._seek_seq += 1
         return target
 
-    def step_relative_seek(self, offset_seconds: float) -> float:
+    def step_relative_seek(self, offset_seconds: float, timestamp: float | None = None) -> float:
         """Apply an ordered relative seek offset. Preserves rapid keypress accumulation."""
-        base = self.get_position() if self._desired_position is None else self._desired_position
+        now = timestamp if timestamp is not None else time.monotonic()
+        base = self.get_position(now) if self._desired_position is None else self._desired_position
         target = base + offset_seconds
         if self._duration > 0.0:
             target = max(0.0, min(target, self._duration))
@@ -220,14 +221,14 @@ class PositionInterpolator:
             target = max(0.0, target)
 
         self._desired_position = target
-        self._seek_time = time.monotonic()
+        self._seek_time = now
         self._seek_seq += 1
         return target
 
-    def confirm_seek(self, confirmed_seconds: float) -> None:
+    def confirm_seek(self, confirmed_seconds: float, timestamp: float | None = None) -> None:
         """Mark seek as confirmed by player (e.g. via Seeked signal)."""
         self._confirmed_position = max(0.0, confirmed_seconds)
-        self._last_sync_time = time.monotonic()
+        self._last_sync_time = timestamp if timestamp is not None else time.monotonic()
         self._desired_position = None
 
     def cancel_seek(self) -> None:
