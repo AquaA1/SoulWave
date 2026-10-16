@@ -1,8 +1,4 @@
-# 🎧 Soulwave
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/AquaA1/SoulWave/main/soulwave/mascot/preview.png" alt="Soulwave Banner" width="480" onerror="this.style.display='none'"/>
-</p>
+# Soulwave
 
 ```
              ✧                        
@@ -15,7 +11,6 @@
   ✧           ▀▀▀▀▀▀▀▀              
         ˚     ▄▀ ▀  ▀▄              
        ♬                            
-        ╭──────────────────╮
 ```
 
 > **A retro-futuristic terminal music controller with grooving pixel-art soul companions, synchronized scrolling lyrics, real-time audio spectrum visualization, and universal MPRIS integration.**
@@ -30,112 +25,111 @@
 
 ## Table of Contents
 
-- [✨ Features](#-features)
-- [🚀 Quick Installation](#-quick-installation)
-  - [One-Liner Install (Recommended)](#one-liner-install-recommended)
-  - [Fedora Linux & RPM Distributions](#fedora-linux--rpm-distributions)
+- [Features](#features)
+- [Installation](#installation)
+  - [One-Liner Install](#one-liner-install-recommended)
+  - [Fedora & RPM Distributions](#fedora--rpm-distributions)
   - [Ubuntu, Debian, Arch & Other Distributions](#ubuntu-debian-arch--other-distributions)
-  - [Inspection Before Installing](#inspection-before-installing)
+  - [Installation Options](#installation-options)
+  - [Recommended Audio Utilities](#recommended-audio-utilities)
   - [Upgrading & Uninstallation](#upgrading--uninstallation)
-- [🎮 Getting Started](#-getting-started)
-- [⌨️ Complete Keybindings](#️-complete-keybindings)
-- [👾 The Mascot & Companions Family](#-the-mascot--companions-family)
-- [🎵 Lyrics Synchronization Engine](#-lyrics-synchronization-engine)
-- [📊 Audio Spectrum Visualizer (CAVA)](#-audio-spectrum-visualizer-cava)
-- [🎨 Dynamic Themes & Colors](#-dynamic-themes--colors)
-- [🖥️ Mini Mode for Tiling WMs & Tmux](#️-mini-mode-for-tiling-wms--tmux)
-- [⚙️ Full Configuration Guide](#️-full-configuration-guide)
-- [🎧 Player Setup & Permissions Guide](#-player-setup--permissions-guide)
-- [❓ Troubleshooting & FAQ](#-troubleshooting--faq)
-- [🛠️ Packaging & Release Pipeline](#️-packaging--release-pipeline)
-- [🧪 Running the Test Suite](#-running-the-test-suite)
-- [📄 License & Credits](#-license--credits)
+- [Verification & Health Check](#verification--health-check)
+- [Getting Started](#getting-started)
+- [Keybindings](#keybindings)
+- [The Mascot & Companions](#the-mascot--companions)
+- [Lyrics Synchronization](#lyrics-synchronization)
+- [Audio Spectrum Visualizer](#audio-spectrum-visualizer)
+- [Themes & Colors](#themes--colors)
+- [Mini Mode](#mini-mode)
+- [Configuration Guide](#configuration-guide)
+- [Player Setup & Permissions](#player-setup--permissions)
+- [Troubleshooting & FAQ](#troubleshooting--faq)
+- [Packaging & Releases](#packaging--releases)
+- [Running Tests](#running-tests)
+- [License](#license)
 
 ---
 
-## ✨ Features
+## Features
 
-- **Universal MPRIS Media Player Control**: Seamlessly detects and controls Spotify, Firefox, Chrome, Brave, MPV, VLC, Cider, Amberol, Rhythmbox, or any MPRIS-compatible Linux media player over D-Bus with zero manual configuration.
-- **The Grooving Soul Mascot**: An enlarged pixel-art soul wearing glowing headphones, animated with a smooth, deterministic 2.2-second dance cycle derived from a monotonic clock.
+- **Universal MPRIS Control**: Automatically connects to Spotify, Firefox, Chrome, Brave, MPV, VLC, Cider, Amberol, Rhythmbox, or any MPRIS-compatible Linux media player over D-Bus with zero manual configuration.
+- **The Grooving Soul Mascot**: An enlarged pixel-art soul wearing headphones, animated with a smooth, deterministic 2.2-second dance cycle derived from a monotonic clock.
 - **Three Unified Companion Mascots**:
-  - 🌿 **Pip (The gentle soul)**: Subtle vertical bobs with a delicate swaying sprout leaf.
-  - ⭐ **Nova (The energetic soul)**: Playful double-hop bounces crowned with a glowing star halo.
-  - 🎧 **Mochi (The sleepy soul)**: Cozy side-to-side rocking with custom headphone earcups.
+  - **Pip (The gentle soul)**: Subtle vertical bobs with a delicate swaying sprout leaf.
+  - **Nova (The energetic soul)**: Playful double-hop bounces crowned with a star halo.
+  - **Mochi (The sleepy soul)**: Cozy side-to-side rocking with custom headphone earcups.
 - **Graceful Track Transitions**: Mascots ease down smoothly when switching songs (<kbd>n</kbd>/<kbd>p</kbd>) or when metadata loads, eliminating erratic jumps or sudden acceleration.
 - **Synchronized Scrolling Lyrics**: Real-time `.lrc` lyrics from LRCLIB with auto-scrolling, active line centering, local persistent caching, and on-the-fly timing offset adjustments (<kbd>[</kbd> / <kbd>]</kbd> ±100ms).
-- **No-Lyrics Dance Fallback**: When synchronized lyrics are unavailable, Soulwave displays a calm countdown and transitions into an enlarged center-stage groove so your terminal never looks blank.
-- **Local Timeline Interpolation & Click-to-Seek**: Sub-second progress timeline without D-Bus spam, complete with full mouse click-to-seek and track-epoch safeguards against stale zero-position anomalies.
+- **No-Lyrics Fallback**: When synchronized lyrics are unavailable, Soulwave transitions into a full center-stage mascot groove so your terminal always feels alive.
+- **Timeline Interpolation & Click-to-Seek**: Sub-second progress timeline without D-Bus spam, complete with full mouse click-to-seek and safeguards against stale zero-position anomalies.
 - **Live CAVA Audio Spectrum**: Direct FIFO audio spectrum visualizer with smooth frequency scaling and graceful decay when paused.
-- **Curated Dynamic Themes**: Six built-in aesthetic palettes (*Night, Sunset, Mint, Sakura, Cyberpunk, Mono*) combined with a deterministic dynamic accent color calculated uniquely for each track.
-- **Compact Mini Mode (`m`)**: Collapses Soulwave into an ultra-slim single-widget bar perfect for tmux panes, i3/sway bars, or narrow sidebars.
-- **Zero-Dependency Demo Mode (`--demo`)**: Try out Soulwave immediately even when no media player is playing!
+- **Curated Dynamic Themes**: Six built-in aesthetic palettes (*Night, Sunset, Mint, Sakura, Cyberpunk, Mono*) combined with an algorithmic dynamic accent color calculated uniquely for each track.
+- **Compact Mini Mode (<kbd>m</kbd>)**: Collapses Soulwave into an ultra-slim single-line widget ideal for tmux panes, tiling window manager bars, or narrow sidebars.
+- **Zero-Dependency Demo Mode (`--demo`)**: Try out Soulwave immediately even when no media player is active.
 
 ---
 
-## 🚀 Quick Installation
+## Installation
 
 ### One-Liner Install (Recommended)
 
-Run the official installer directly from your terminal:
+Run the official installer directly in your terminal:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 ```
 
-Once installed, simply type:
+Once installed, launch Soulwave:
 
 ```bash
 soulwave
 ```
 
-> **Zero hassle**: The installer automatically chooses the best installation method for your distribution, verifies SHA-256 cryptographic checksums, configures the executable launcher in your standard `$PATH`, and requires **no virtualenv activation**, **no aliases**, and **no manual shell configuration**.
+The installer automatically selects the best method for your distribution, verifies SHA-256 cryptographic checksums, configures the launcher in your standard `$PATH`, and runs an automated health check to confirm runtime dependencies and UI assets.
 
 ---
 
-### Fedora Linux & RPM Distributions
+### Fedora & RPM Distributions
 
-On Fedora Linux, CentOS Stream, RHEL, Rocky Linux, and AlmaLinux, the installer automatically downloads and installs the native Fedora RPM package:
+On Fedora, CentOS Stream, RHEL, Rocky Linux, and AlmaLinux, the installer automatically installs the native standalone RPM:
 
 ```bash
 # Automated via installer
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 
-# Or install manually from a downloaded release RPM:
-sudo dnf install ./soulwave-*.noarch.rpm
+# Or manually from a downloaded release RPM:
+sudo dnf install ./soulwave-*.rpm
 ```
 
-- **Standard Binary**: Installed to `/usr/bin/soulwave` (always on `$PATH`).
-- **Isolated Runtime**: Pure-Python runtime located in `/usr/lib/soulwave/vendor` conforming strictly to Fedora packaging guidelines and PEP 668 (zero pollution of system Python).
-- **Clean Package Management**: Fully integrated with `dnf` for clean updates and removals.
+- **Executable Launcher**: `/usr/bin/soulwave` (on default `$PATH`).
+- **Isolated Vendor Runtime**: Pure-Python runtime in `/usr/lib/soulwave/vendor` conforming strictly to Fedora packaging guidelines and PEP 668.
+- **Clean Package Management**: Managed directly through `dnf` for clean updates and removals.
 
 ---
 
 ### Ubuntu, Debian, Arch & Other Distributions
 
-On non-RPM distributions, `install.sh` automatically creates an isolated application runtime:
+On non-RPM distributions, `install.sh` creates an isolated application environment:
 - **System-wide** (with `sudo`): Installs to `/opt/soulwave` with launcher in `/usr/local/bin/soulwave`.
 - **User-only** (without root / with `--user`): Installs to `~/.local/share/soulwave` with launcher in `~/.local/bin/soulwave`.
 
 ---
 
-### Inspection Before Installing
+### Installation Options
 
-If you prefer to inspect scripts before executing them:
+You can download and inspect the installer script before running it:
 
 ```bash
-# Download and view the installer script
 curl -fsSL -o install.sh https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh
 less install.sh
-
-# Run locally with optional flags
-bash install.sh
+bash install.sh [OPTIONS]
 ```
 
-#### Installer Flags & Options
+#### Available Flags
 
-```
+```text
 OPTIONS:
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.0)
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.1 or 0.1.1)
     --file, -f <path>    Install from a local .rpm or .whl file without network
     --user               Force user directory install (~/.local/share/soulwave)
     --system             Force system directory install (/opt/soulwave or RPM)
@@ -148,7 +142,7 @@ OPTIONS:
 
 ### Recommended Audio Utilities
 
-Soulwave functions immediately out of the box with an internal mock player and audio fallback. To enable active MPRIS player tracking and real-time audio spectrum visualization:
+Soulwave functions out of the box with an internal mock player and audio fallback. To enable active MPRIS player tracking and real-time audio spectrum visualization:
 
 ```bash
 # Fedora / RHEL / CentOS
@@ -169,10 +163,10 @@ sudo zypper install playerctl cava
 ### Upgrading & Uninstallation
 
 ```bash
-# Upgrade to the latest release anytime (recommended):
+# Upgrade to the latest release:
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 
-# For manual RPM installs: download the latest release RPM and upgrade:
+# For manual RPM installs:
 sudo dnf upgrade ./soulwave-*.rpm
 
 # Clean uninstallation:
@@ -184,7 +178,23 @@ sudo dnf remove soulwave
 
 ---
 
-## 🎮 Getting Started
+## Verification & Health Check
+
+Soulwave provides a built-in health check flag to verify runtime imports, stylesheet package data, and headless UI mounting:
+
+```bash
+soulwave --check
+```
+
+On a healthy installation, this outputs:
+```text
+Checking Soulwave installation...
+✓ Soulwave v0.1.1 health check passed (all runtime dependencies and UI stylesheets verified).
+```
+
+---
+
+## Getting Started
 
 Launch Soulwave in your preferred terminal emulator (Kitty, Alacritty, Ghostty, WezTerm, Foot, GNOME Terminal, etc.):
 
@@ -207,7 +217,7 @@ soulwave --player spotify
 
 ---
 
-## ⌨️ Complete Keybindings
+## Keybindings
 
 | Key | Function | Description |
 |:---:|:---|:---|
@@ -216,8 +226,8 @@ soulwave --player spotify
 | <kbd>p</kbd> | **Previous Track** | Return to previous track |
 | <kbd>→</kbd> | **Seek Forward** | Jump forward by 5 seconds |
 | <kbd>←</kbd> | **Seek Backward** | Jump backward by 5 seconds |
-| <kbd>↑</kbd> or <kbd>+</kbd> | **Volume Up** | Increase player volume by 5% |
-| <kbd>↓</kbd> or <kbd>-</kbd> | **Volume Down** | Decrease player volume by 5% |
+| <kbd>↑</kbd> / <kbd>+</kbd> | **Volume Up** | Increase player volume by 5% |
+| <kbd>↓</kbd> / <kbd>-</kbd> | **Volume Down** | Decrease player volume by 5% |
 | <kbd>s</kbd> | **Shuffle** | Toggle player shuffle mode |
 | <kbd>r</kbd> | **Repeat / Loop** | Cycle repeat mode (*Off → Track → Playlist*) |
 | <kbd>Tab</kbd> | **Switch Player** | Cycle through active players (*Spotify, Firefox, Chrome, Demo*) |
@@ -225,20 +235,20 @@ soulwave --player spotify
 | <kbd>v</kbd> | **Toggle Visualizer** | Show / hide the CAVA audio frequency spectrum |
 | <kbd>t</kbd> | **Cycle Theme** | Cycle themes (*Night → Sunset → Mint → Sakura → Cyberpunk → Mono*) |
 | <kbd>m</kbd> | **Mini Mode** | Toggle between full dashboard and ultra-compact widget |
-| <kbd>[</kbd> | **Lyrics Offset -** | Nudge lyrics 100ms earlier (persisted per song) |
-| <kbd>]</kbd> | **Lyrics Offset +** | Nudge lyrics 100ms later (persisted per song) |
+| <kbd>[</kbd> | **Lyrics Offset -** | Shift lyrics 100ms earlier (saved per song) |
+| <kbd>]</kbd> | **Lyrics Offset +** | Shift lyrics 100ms later (saved per song) |
 | <kbd>q</kbd> | **Quit** | Exit Soulwave |
-| **Mouse Click** | **Direct Timeline Seek** | Click anywhere along the timeline bar to seek immediately! |
+| **Mouse Click** | **Direct Timeline Seek** | Click anywhere along the timeline bar to seek immediately |
 
 ---
 
-## 👾 The Mascot & Companions Family
+## The Mascot & Companions
 
-Soulwave's visual center is a cozy animated scene featuring a large grooving soul mascot and three charming companion souls rendered in truecolor ANSI half-blocks (`▀`, `▄`).
+Soulwave features an animated retro scene with a grooving main soul mascot and three soul companions rendered in truecolor ANSI half-blocks (`▀`, `▄`).
 
-```
-   [Pip 🌿]           [Soul 🎧]           [Nova ⭐]      [Mochi 🎧]
-  Gentle Bob         Groovy Dance        Energetic Hop    Sleepy Rock
+```text
+   [Pip]              [Soul]              [Nova]         [Mochi]
+ Gentle Bob        Groovy Dance       Energetic Hop    Sleepy Rock
 ```
 
 ### Deterministic Dance Cycle
@@ -248,39 +258,37 @@ Soulwave's visual center is a cozy animated scene featuring a large grooving sou
   2. **Beat 2**: Rhythmic vertical bounce downward.
   3. **Beat 3**: Smooth horizontal lean to the right.
   4. **Beat 4**: Upright center rebound.
-- Floating musical notes (`♪`, `♫`, `♬`) rise organically into the air as the music plays.
+- Floating musical notes rise organically as the music plays.
 
 ### Transition Easing
-When changing tracks or waiting for stream metadata, the mascot never speeds up or stutters. The animation engine enters a `TRACK_TRANSITION` state that smoothly dampens motion down to a calm resting pose, resuming the dance only when the new song confirms active playback.
+When changing tracks or waiting for stream metadata, the mascot enters a `TRACK_TRANSITION` state that smoothly dampens motion down to a calm resting pose, resuming the dance only when the new song confirms active playback.
 
 ---
 
-## 🎵 Lyrics Synchronization Engine
-
-Soulwave features a production-grade lyrics engine:
+## Lyrics Synchronization
 
 1. **LRCLIB Integration**: Automatically queries synchronized `.lrc` timestamps using song title, artist, and duration.
-2. **Plain-Text Fallback**: If synchronized lyrics are not available, plain lyrics are progressively scrolled based on the song's playback progress.
-3. **No-Lyrics Fallback**: If no lyrics exist, Soulwave gracefully switches into a full-width mascot dance showcase with ambient audio groove.
-4. **Local Disk Caching**: Lyrics are stored locally in `~/.cache/soulwave/lyrics/` to prevent duplicate API requests and enable instant loading on replays.
-5. **Manual Offset Memory**: Fine-tune lyric timing using <kbd>[</kbd> and <kbd>]</kbd> (±100ms per press). Offsets are remembered across sessions for that specific track.
+2. **Plain-Text Fallback**: If synchronized timestamps are unavailable, plain lyrics are progressively scrolled based on track progress.
+3. **No-Lyrics Fallback**: If no lyrics exist, Soulwave switches into an ambient mascot groove showcase.
+4. **Local Disk Caching**: Lyrics are stored locally in `~/.cache/soulwave/lyrics/` to prevent duplicate API requests.
+5. **Manual Offset Memory**: Fine-tune lyric timing using <kbd>[</kbd> and <kbd>]</kbd> (±100ms per press). Offsets are remembered across sessions for each track.
 
 ---
 
-## 📊 Audio Spectrum Visualizer (CAVA)
+## Audio Spectrum Visualizer
 
 Soulwave embeds a real-time 16-bar frequency spectrum powered by [CAVA](https://github.com/karlstav/cava):
 
 - Connects automatically via a private FIFO pipe in `/tmp/soulwave-cava-*.fifo`.
 - Auto-detects audio output devices through PulseAudio, PipeWire, or ALSA.
-- Features smooth peak smoothing and a graceful decay animation when playback pauses.
+- Features peak smoothing and graceful decay animation when playback pauses.
 - If CAVA is not installed, Soulwave displays a subtle rhythm-based ambient visualizer so the interface remains cohesive.
 
 ---
 
-## 🎨 Dynamic Themes & Colors
+## Themes & Colors
 
-Soulwave comes with 6 handcrafted color palettes:
+Soulwave includes 6 handcrafted color palettes:
 
 - **Night** *(Default)*: Midnight deep navy, slate gray, electric violet, and soft cyan.
 - **Sunset**: Dusk purple, warm peach, vibrant coral, and golden hour amber.
@@ -289,25 +297,25 @@ Soulwave comes with 6 handcrafted color palettes:
 - **Cyberpunk**: Deep onyx, neon magenta, electric cyan, and laser yellow.
 - **Mono**: Minimalist high-contrast carbon slate and chalk white.
 
-Press <kbd>t</kbd> to cycle themes at any time. Soulwave also generates an **algorithmic dynamic accent color** for every unique song title and artist, subtly tinting progress bars and mascots.
+Press <kbd>t</kbd> to cycle themes at any time. Soulwave also generates an algorithmic dynamic accent color for every unique song title and artist, subtly tinting progress bars and mascots.
 
 ---
 
-## 🖥️ Mini Mode for Tiling WMs & Tmux
+## Mini Mode
 
 Press <kbd>m</kbd> or launch with `soulwave --mini` to switch to Mini Mode:
 
-```
+```text
 ▶  Cyberpunk 2077 OST - I Really Want to Stay At Your House   02:14 / 04:06 ━━━━●──────── [Spotify]
 ```
 
 - Collapses the multi-panel layout into an ultra-compact single widget.
-- Perfect for narrow tmux panes, i3/sway/hyprland sidebars, or floating terminal scratchpads.
+- Perfect for narrow tmux panes, i3/sway/hyprland bars, or floating terminal scratchpads.
 - Retains all playback keybindings (<kbd>Space</kbd>, <kbd>n</kbd>, <kbd>p</kbd>, seeks, volume).
 
 ---
 
-## ⚙️ Full Configuration Guide
+## Configuration Guide
 
 Soulwave automatically creates a default configuration file at `~/.config/soulwave/config.toml` (respecting `$XDG_CONFIG_HOME`):
 
@@ -352,9 +360,9 @@ auto_scroll = true          # Automatically center active lyric line
 
 ---
 
-## 🎧 Player Setup & Permissions Guide
+## Player Setup & Permissions
 
-Soulwave uses the standard Linux MPRIS D-Bus interface. Most modern Linux media players work out of the box with zero setup:
+Soulwave uses the standard Linux MPRIS D-Bus interface. Most media players work out of the box:
 
 ### Spotify
 - **Native / Deb / RPM**: Works automatically.
@@ -379,59 +387,60 @@ Soulwave uses the standard Linux MPRIS D-Bus interface. Most modern Linux media 
 
 ---
 
-## ❓ Troubleshooting & FAQ
+## Troubleshooting & FAQ
 
 ### Soulwave shows "No Player Connected"
-1. Start playing music in your browser or desktop player.
-2. Run `playerctl status` in a terminal. If `playerctl` sees the player, Soulwave will connect instantly.
-3. If using Firefox, make sure an audio or video tab is actively playing.
+1. Start playback in your browser or desktop music player.
+2. Run `playerctl status` in a terminal. If `playerctl` sees the player, Soulwave connects instantly.
+3. If using Firefox, ensure an audio or video tab is actively playing.
 
 ### Total time displays `--:--`
-- Some web streams (live radio or podcasts) do not provide an end duration over MPRIS. Soulwave safely protects timeline position and displays live elapsed time without crashing.
+- Some live streams (radio, podcasts) do not report total track duration over MPRIS. Soulwave safely protects timeline position and displays live elapsed time without crashing.
 
 ### Lyrics timing is slightly ahead or behind
-- Press <kbd>[</kbd> to shift lyrics 100ms earlier or <kbd>]</kbd> to shift lyrics 100ms later. Soulwave remembers your offset for that track.
+- Press <kbd>[</kbd> to shift lyrics 100ms earlier or <kbd>]</kbd> to shift lyrics 100ms later. Soulwave saves your offset for that track.
 
 ### CAVA visualizer is flat
-- Verify CAVA works independently: run `cava` in a terminal.
+- Verify CAVA works independently by running `cava` in a terminal.
 - If using PipeWire or PulseAudio, ensure your default audio sink is unmuted.
+
+### Verify Installation Health
+- Run `soulwave --check` to verify that all Python dependencies and stylesheet package assets are installed properly.
 
 ---
 
-## 🛠️ Packaging & Release Pipeline
+## Packaging & Releases
 
 Soulwave features an automated, production-ready release pipeline:
 
 - **Fedora RPM Specification**: [`packaging/rpm/soulwave.spec`](packaging/rpm/soulwave.spec)
   - Isolated `/usr/lib/soulwave/vendor` runtime.
   - Native `/usr/bin/soulwave` launcher.
-  - Spec validation tested via `rpmspec` and `rpmbuild`.
 - **Local RPM Builder**: [`packaging/rpm/build_rpm.sh`](packaging/rpm/build_rpm.sh)
 - **GitHub Actions Workflow**: [`.github/workflows/release.yml`](.github/workflows/release.yml)
   - Multi-version Python test matrix (3.10 - 3.13).
-  - Python wheel and sdist packaging.
-  - Native Fedora 41 container RPM build.
+  - Wheel and sdist distribution builds with verified package data.
+  - Native Fedora container RPM build.
   - Automated SHA-256 `checksums.txt` generation.
   - Automated GitHub Releases publication on version tag pushes (`v*`).
 
 ---
 
-## 🧪 Running the Test Suite
+## Running Tests
 
-Soulwave includes an extensive automated test suite covering unit tests, D-Bus integration, headless UI acceptance tests, animation timing, and packaging validation:
+Soulwave includes an automated test suite covering unit tests, D-Bus integration, headless UI acceptance tests, animation timing, and packaging validation:
 
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
 
-# Run all 97 tests
+# Run all 111 tests
 pytest tests/ -v
 ```
 
 ---
 
-## 📄 License & Credits
+## License
 
 - **License**: [MIT License](LICENSE).
-- **Crafted with cozy vibes** for terminal enthusiasts, tiling window manager lovers, and music vibers everywhere.
 - Powered by [Textual](https://github.com/Textualize/textual), [Rich](https://github.com/Textualize/rich), [LRCLIB](https://lrclib.net), and [CAVA](https://github.com/karlstav/cava).
