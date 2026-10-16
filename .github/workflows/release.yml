@@ -107,7 +107,7 @@ jobs:
 
       - name: Run test suite
         run: |
-          pytest -v
+          pytest -v --tb=short
 
   build-python:
     name: Build Wheel and Source Distribution

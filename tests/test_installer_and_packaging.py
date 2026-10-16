@@ -166,6 +166,11 @@ def test_user_mode_installation_and_uninstallation(tmp_path):
     if wheel_file is None or not wheel_file.is_file():
         pytest.skip("Built wheel file not available")
 
+    # Probe whether python3 venv works on this host
+    test_v = subprocess.run(["python3", "-m", "venv", str(tmp_path / "probe_v")], capture_output=True)
+    if test_v.returncode != 0:
+        pytest.skip("System python3 venv creation not supported on this host")
+
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
@@ -211,6 +216,11 @@ def test_wheel_installation_with_real_dependencies(tmp_path):
     wheel_file = get_built_wheel()
     if wheel_file is None or not wheel_file.is_file():
         pytest.skip("Built wheel file not available")
+
+    # Probe whether python3 venv works on this host
+    test_v = subprocess.run(["python3", "-m", "venv", str(tmp_path / "probe_v2")], capture_output=True)
+    if test_v.returncode != 0:
+        pytest.skip("System python3 venv creation not supported on this host")
 
     if not VENDOR_WHEELS_DIR.is_dir() or not list(VENDOR_WHEELS_DIR.glob("*.whl")):
         pytest.skip("Vendor wheels directory not populated for offline test")
@@ -401,6 +411,9 @@ def test_release_workflow_version_extraction_snippet():
     import sys
     import yaml
     import subprocess
+
+    if sys.version_info < (3, 11):
+        pytest.skip("tomllib standard library requires Python 3.11+")
     content = RELEASE_YML.read_text(encoding="utf-8")
     data = yaml.safe_load(content)
     steps = data["jobs"]["validate"]["steps"]
