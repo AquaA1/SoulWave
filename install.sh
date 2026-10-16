@@ -396,6 +396,7 @@ install_rpm() {
         log_error "Neither dnf nor rpm found to install RPM package."
         exit 1
     fi
+    LAST_INSTALLED_LAUNCHER="/usr/bin/soulwave"
 }
 
 # Install Wheel into an isolated directory
@@ -454,6 +455,7 @@ exec "${install_dir}/bin/python3" -m soulwave.cli "\$@"
 EOF
         chmod 0755 "${bin_dir}/soulwave"
     fi
+    LAST_INSTALLED_LAUNCHER="${bin_dir}/soulwave"
 
     # Verify PATH
     if [[ ":${PATH}:" != *":${bin_dir}:"* ]]; then
@@ -507,6 +509,40 @@ main() {
             exit 1
             ;;
     esac
+
+    # Post-installation verification health check
+    if [ "${NO_DEPS}" -eq 1 ]; then
+        log_warn "Installed with --no-deps. Skipping full runtime health check."
+    else
+        log_info "Verifying installed Soulwave runtime and resources..."
+        local launcher_to_check="${LAST_INSTALLED_LAUNCHER:-}"
+        if [ -z "${launcher_to_check}" ] || [ ! -x "${launcher_to_check}" ]; then
+            if command -v soulwave >/dev/null 2>&1; then
+                launcher_to_check="$(command -v soulwave)"
+            elif [ -x "/usr/local/bin/soulwave" ]; then
+                launcher_to_check="/usr/local/bin/soulwave"
+            elif [ -x "/usr/bin/soulwave" ]; then
+                launcher_to_check="/usr/bin/soulwave"
+            elif [ -x "${HOME}/.local/bin/soulwave" ]; then
+                launcher_to_check="${HOME}/.local/bin/soulwave"
+            fi
+        fi
+
+        if [ -z "${launcher_to_check}" ] || [ ! -x "${launcher_to_check}" ]; then
+            log_error "Installation health check failed: Soulwave launcher not found."
+            exit 1
+        fi
+
+        local check_out
+        if ! check_out="$("${launcher_to_check}" --check 2>&1)"; then
+            log_error "Installation health check failed! The installed Soulwave package is unable to start or is missing required runtime resources:"
+            echo "${check_out}" >&2
+            echo "" >&2
+            log_error "Please ensure all Python dependencies and required system packages are installed."
+            exit 1
+        fi
+        log_success "Post-installation health check passed."
+    fi
 
     echo ""
     log_success "Soulwave installed successfully!"

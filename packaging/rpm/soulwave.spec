@@ -1,4 +1,4 @@
-%{!?version: %global version 0.1.0}
+%{!?version: %global version 0.1.1}
 Name:           soulwave
 Version:        %{version}
 Release:        %{?release}%{!?release:1}%{?dist}
@@ -60,15 +60,7 @@ EOF
 chmod 0755 %{buildroot}%{_bindir}/%{name}
 
 %check
-PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -c "
-import soulwave
-import soulwave.cli
-from textual.app import App
-import rich
-import syncedlyrics
-import requests
-print('Verified: All core Python runtime dependencies successfully imported from vendor environment.')
-"
+PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -m soulwave.cli --check
 
 %files
 %{_docdir}/%{name}
@@ -77,5 +69,9 @@ print('Verified: All core Python runtime dependencies successfully imported from
 %{_prefix}/lib/%{name}
 
 %changelog
+* Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.1-1
+- Critical fix: bundle styles.tcss package data into wheel and vendor runtime
+- Add non-interactive health check verification
+
 * Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.0-1
 - Production release of Soulwave

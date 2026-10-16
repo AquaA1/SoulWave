@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "soulwave"
-version = "0.1.0"
+version = "0.1.1"
 description = "A cute terminal music controller with a grooving pixel-art soul mascot"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,3 +31,6 @@ soulwave = "soulwave.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["soulwave*"]
+
+[tool.setuptools.package-data]
+"soulwave.ui" = ["*.tcss"]

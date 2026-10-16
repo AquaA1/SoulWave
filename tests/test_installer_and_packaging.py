@@ -18,9 +18,11 @@ VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
 import sys
 
 
-def get_built_rpm():
-    """Find built RPM in dist directory."""
-    rpms = list(DIST_DIR.glob("*.rpm"))
+def get_built_rpm(version: str = "0.1.1"):
+    """Find built RPM in dist directory matching version."""
+    rpms = [r for r in DIST_DIR.glob("*.rpm") if version in r.name]
+    if not rpms:
+        rpms = list(DIST_DIR.glob("*.rpm"))
     # Prefer x86_64, then noarch
     x86_64_rpms = [r for r in rpms if "x86_64" in r.name]
     if x86_64_rpms:
@@ -28,9 +30,9 @@ def get_built_rpm():
     return rpms[0] if rpms else None
 
 
-def get_built_wheel():
-    """Find or build wheel in dist directory."""
-    wheels = list(DIST_DIR.glob("*.whl"))
+def get_built_wheel(version: str = "0.1.1"):
+    """Find or build wheel in dist directory matching version."""
+    wheels = [w for w in DIST_DIR.glob("*.whl") if version in w.name]
     if wheels:
         return wheels[0]
     DIST_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,8 +41,11 @@ def get_built_wheel():
         check=False,
         capture_output=True,
     )
-    wheels = list(DIST_DIR.glob("*.whl"))
-    return wheels[0] if wheels else None
+    wheels = [w for w in DIST_DIR.glob("*.whl") if version in w.name]
+    if wheels:
+        return wheels[0]
+    all_wheels = list(DIST_DIR.glob("*.whl"))
+    return all_wheels[0] if all_wheels else None
 
 
 def test_install_script_exists_and_executable():
@@ -263,7 +268,7 @@ def test_rpm_spec_syntax_and_metadata():
     )
     assert result.returncode == 0, f"rpmspec failed: {result.stderr}"
     pkg_name = result.stdout.strip()
-    assert "soulwave-0.1.0-1" in pkg_name
+    assert "soulwave-0.1.1-1" in pkg_name
 
     # Verify requires
     req_res = subprocess.run(
@@ -325,6 +330,21 @@ def test_rpm_installation_and_standalone_launch(tmp_path):
     assert "--demo" in cli_test.stdout
     assert "--theme" in cli_test.stdout
 
+    # Verify styles.tcss exists inside vendor soulwave package
+    rpm_tcss = vendor_dir / "soulwave" / "ui" / "styles.tcss"
+    assert rpm_tcss.is_file(), f"styles.tcss missing from RPM vendor runtime: {rpm_tcss}"
+    assert rpm_tcss.stat().st_size > 50
+
+    # Launch CLI health check using system python with ONLY the isolated vendor runtime
+    check_rpm = subprocess.run(
+        ["/usr/bin/python3", "-s", "-m", "soulwave.cli", "--check"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert check_rpm.returncode == 0, f"RPM health check failed: {check_rpm.stderr}\n{check_rpm.stdout}"
+    assert "health check passed" in check_rpm.stdout
+
 
 def test_rpm_spec_dynamic_version_override():
     """Verify that passing version and release macros dynamically overrides spec metadata."""
@@ -334,7 +354,7 @@ def test_rpm_spec_dynamic_version_override():
     
     # 1. Default version
     res_default = subprocess.run(["rpmspec", "-q", str(RPM_SPEC)], capture_output=True, text=True, check=True)
-    assert "soulwave-0.1.0-1" in res_default.stdout
+    assert "soulwave-0.1.1-1" in res_default.stdout
 
     # 2. Dynamic version override
     res_v2 = subprocess.run(
@@ -439,5 +459,146 @@ def test_release_workflow_version_extraction_snippet():
         text=True,
         check=True,
     )
-    assert res.stdout.strip() == "0.1.0"
+    assert res.stdout.strip() == "0.1.1"
+
+
+def test_built_wheel_contains_stylesheet_package_data():
+    """Regression test: Built wheel MUST contain soulwave/ui/styles.tcss."""
+    import zipfile
+    wheel = get_built_wheel()
+    assert wheel is not None, "Wheel must exist or be built"
+    with zipfile.ZipFile(wheel, "r") as z:
+        names = z.namelist()
+        assert "soulwave/ui/styles.tcss" in names, "Wheel archive MUST contain soulwave/ui/styles.tcss"
+        content = z.read("soulwave/ui/styles.tcss").decode("utf-8")
+        assert len(content.strip()) > 50, "styles.tcss in wheel must not be empty"
+        assert "Screen" in content, "styles.tcss in wheel must contain valid Textual CSS"
+
+
+def test_built_sdist_contains_stylesheet_package_data():
+    """Regression test: Built sdist MUST contain soulwave/ui/styles.tcss."""
+    import tarfile
+    sdists = [s for s in DIST_DIR.glob("*.tar.gz") if "0.1.1" in s.name]
+    if not sdists:
+        pytest.skip("Source distribution not found in dist/")
+    with tarfile.open(sdists[0], "r:gz") as tar:
+        names = tar.getnames()
+        matching = [n for n in names if n.endswith("soulwave/ui/styles.tcss")]
+        assert len(matching) > 0, "Source distribution archive MUST contain soulwave/ui/styles.tcss"
+
+
+def test_isolated_wheel_install_mounts_ui_without_stylesheet_error(tmp_path):
+    """Regression test: Installing wheel into clean isolated environment mounts Textual UI without StylesheetError."""
+    wheel_file = get_built_wheel()
+    if wheel_file is None or not wheel_file.is_file():
+        pytest.skip("Built wheel file not available")
+
+    # Probe whether python3 venv works on this host
+    test_v = subprocess.run(["python3", "-m", "venv", str(tmp_path / "probe_v_ui")], capture_output=True)
+    if test_v.returncode != 0:
+        pytest.skip("System python3 venv creation not supported on this host")
+
+    if not VENDOR_WHEELS_DIR.is_dir() or not list(VENDOR_WHEELS_DIR.glob("*.whl")):
+        pytest.skip("Vendor wheels directory not populated for offline test")
+
+    test_venv = tmp_path / "ui_test_venv"
+    subprocess.run(["python3", "-m", "venv", str(test_venv)], check=True)
+
+    # Install soulwave wheel using vendor_wheels
+    pip_install_cmd = [
+        str(test_venv / "bin" / "python3"),
+        "-m", "pip", "install",
+        "--no-index",
+        f"--find-links={VENDOR_WHEELS_DIR}",
+        f"--find-links={DIST_DIR}",
+        str(wheel_file),
+    ]
+    res = subprocess.run(pip_install_cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"pip install failed: {res.stderr}"
+
+    # 1. Assert stylesheet file actually exists in site-packages
+    site_packages_dirs = list(test_venv.glob("lib/python*/site-packages"))
+    assert len(site_packages_dirs) > 0, "site-packages not found in venv"
+    installed_tcss = site_packages_dirs[0] / "soulwave" / "ui" / "styles.tcss"
+    assert installed_tcss.is_file(), f"styles.tcss was not installed to site-packages: {installed_tcss}"
+    assert installed_tcss.stat().st_size > 50
+
+    # 2. Run soulwave --check inside the isolated environment
+    check_res = subprocess.run(
+        [str(test_venv / "bin" / "python3"), "-m", "soulwave.cli", "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert check_res.returncode == 0, f"soulwave --check failed: {check_res.stderr}\n{check_res.stdout}"
+    assert "health check passed" in check_res.stdout
+
+    # 3. Mount SoulwaveApp headless to verify no StylesheetError
+    headless_test = subprocess.run(
+        [
+            str(test_venv / "bin" / "python3"),
+            "-c",
+            (
+                "import asyncio\n"
+                "from soulwave.ui.app import SoulwaveApp\n"
+                "async def test():\n"
+                "    app = SoulwaveApp(force_demo=True)\n"
+                "    async with app.run_test(size=(80, 24)) as pilot:\n"
+                "        await pilot.pause(0.05)\n"
+                "        assert app.mascot_view is not None\n"
+                "        print('SUCCESS_UI_MOUNTED')\n"
+                "asyncio.run(test())\n"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert headless_test.returncode == 0, f"Headless UI test failed with: {headless_test.stderr}"
+    assert "SUCCESS_UI_MOUNTED" in headless_test.stdout
+
+
+def test_installer_health_check_catches_missing_resource(tmp_path):
+    """Verify that install.sh runs health check and fails if styles.tcss is missing."""
+    wheel_file = get_built_wheel()
+    if wheel_file is None or not wheel_file.is_file():
+        pytest.skip("Built wheel file not available")
+
+    test_v = subprocess.run(["python3", "-m", "venv", str(tmp_path / "probe_v_h")], capture_output=True)
+    if test_v.returncode != 0:
+        pytest.skip("System python3 venv creation not supported on this host")
+
+    if not VENDOR_WHEELS_DIR.is_dir() or not list(VENDOR_WHEELS_DIR.glob("*.whl")):
+        pytest.skip("Vendor wheels directory not populated for offline test")
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PIP_FIND_LINKS"] = f"{VENDOR_WHEELS_DIR} {DIST_DIR}"
+    env["PIP_NO_INDEX"] = "1"
+
+    # Normal install should succeed and output health check passed
+    res_install = subprocess.run(
+        [str(INSTALL_SH), "--file", str(wheel_file), "--user"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_install.returncode == 0, f"Installer failed: {res_install.stderr}\n{res_install.stdout}"
+    assert "Post-installation health check passed" in res_install.stdout
+    assert "Soulwave installed successfully!" in res_install.stdout
+
+    launcher = fake_home / ".local" / "bin" / "soulwave"
+    assert launcher.is_file()
+
+    # Now simulate missing stylesheet defect in installed location
+    installed_tcss_files = list(fake_home.glob(".local/share/soulwave/**/styles.tcss"))
+    assert len(installed_tcss_files) > 0, "styles.tcss should be present in installed directory"
+    for f in installed_tcss_files:
+        f.unlink()
+
+    # Health check directly must now FAIL with non-zero exit code
+    check_fail = subprocess.run([str(launcher), "--check"], capture_output=True, text=True, env=env, cwd=str(tmp_path))
+    assert check_fail.returncode != 0
+    assert "Stylesheet file not found" in check_fail.stderr or "StylesheetError" in check_fail.stderr
 
