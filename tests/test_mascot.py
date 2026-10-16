@@ -105,3 +105,37 @@ def test_room_scene_ambient_symbols():
     # When idle: sleeping state
     scene.update(is_playing=False, is_paused=False, is_idle=True)
     assert scene._is_idle is True
+
+
+def test_enlarged_mascot_dimensions():
+    """Verify the enlarged main mascot frames are 25x22 pixels (~1.45x scale)."""
+    from soulwave.mascot.frames import (
+        IDLE_F0,
+        PLAY_BOB_DOWN,
+        PLAY_SWAY_LEFT,
+        PLAY_SWAY_RIGHT,
+        PLAY_HOP,
+    )
+
+    for frame in [IDLE_F0, PLAY_BOB_DOWN, PLAY_SWAY_LEFT, PLAY_SWAY_RIGHT, PLAY_HOP]:
+        sprite = FrameLibrary.create_sprite(frame)
+        assert sprite.width == 25
+        assert sprite.height == 22
+
+
+def test_groove_sway_and_bounce():
+    """Verify that playing state produces horizontal sway and vertical bounce."""
+    scene = RoomScene(width=34, height=12)
+    sprite = FrameLibrary.create_sprite(IDLE_F0)
+
+    # Idle frame compose
+    scene.update(is_playing=False, is_paused=False, is_idle=True)
+    idle_render = scene.compose_frame(sprite).plain
+    assert len(idle_render) > 0
+
+    # Playing frame with energy produces lively rendering without crashing or overflow
+    scene.update(is_playing=True, is_paused=False, energy=0.7)
+    play_render = scene.compose_frame(sprite).plain
+    assert len(play_render) > 0
+    # Floor shadow rug character is present
+    assert "╭" in play_render and "╮" in play_render

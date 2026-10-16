@@ -320,8 +320,10 @@ class SoulwaveApp(App):
         is_playing = self._last_state.status == PlaybackStatus.PLAYING
         is_paused = self._last_state.status == PlaybackStatus.PAUSED
 
+        energy = getattr(self.visualizer_view, "current_energy", 0.0)
+
         # Update room scene physics
-        self.scene.update(is_playing, is_paused, self.accent_color)
+        self.scene.update(is_playing, is_paused, self.accent_color, energy=energy)
         self.mascot_view.refresh()
 
         # Local progress interpolation

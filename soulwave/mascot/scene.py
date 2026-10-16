@@ -105,6 +105,7 @@ class RoomScene:
         is_paused: bool,
         accent_color: RGBColor | None = None,
         is_idle: bool = False,
+        energy: float = 0.0,
     ) -> None:
         """Update particle physics and spawn new notes."""
         now = time.monotonic()
@@ -113,10 +114,12 @@ class RoomScene:
         self._is_playing = is_playing
         self._is_paused = is_paused
         self._is_idle = is_idle or (not is_playing and not is_paused)
+        self.energy = max(0.0, min(1.0, energy))
 
         # Advance deterministic ambient music symbols clock
         if is_playing:
-            self._ambient_phase += dt * 2.5
+            speed_mult = 2.5 + (self.energy * 1.5)
+            self._ambient_phase += dt * speed_mult
         elif is_paused:
             self._ambient_phase += dt * 0.7
         else:
@@ -165,9 +168,20 @@ class RoomScene:
                 canvas_chars[sy][sx] = schar
                 canvas_styles[sy][sx] = Style(color=f"rgb({brightness},{brightness},{brightness})")
 
-        # Mascot top-left placement (centered)
-        start_x = max(0, (self.width - mascot_w) // 2)
-        start_y = max(0, (self.height - mascot_h) // 2)
+        # Mascot top-left placement with smooth rhythmic sway and bounce when playing
+        sway_x = 0
+        bounce_y = 0
+        if self._is_playing:
+            sway_amp = 1.6 + (getattr(self, "energy", 0.0) * 0.8)
+            sway_x = int(round(math.sin(self._ambient_phase * 1.4) * sway_amp))
+            bounce_amp = 0.6 + (getattr(self, "energy", 0.0) * 0.4)
+            bounce_y = int(round(abs(math.sin(self._ambient_phase * 2.8)) * bounce_amp))
+
+        base_x = (self.width - mascot_w) // 2
+        base_y = (self.height - mascot_h) // 2
+
+        start_x = max(0, min(self.width - mascot_w, base_x + sway_x))
+        start_y = max(0, min(self.height - mascot_h, base_y - bounce_y))
 
         # Draw subtle ambient music symbols around mascot (unobstructed)
         col = accent_color or (56, 189, 248)
@@ -204,7 +218,7 @@ class RoomScene:
 
             # Ensure symbol stays outside the mascot bounds
             if start_y <= sy < start_y + mascot_h and start_x <= sx < start_x + mascot_w:
-                sx = start_x - 2 if sx < self.width // 2 else start_x + mascot_w + 2
+                sx = max(0, start_x - 2) if sx < self.width // 2 else min(self.width - 1, start_x + mascot_w + 1)
 
             if 0 <= sy < self.height and 0 <= sx < self.width:
                 canvas_chars[sy][sx] = sym["char"]
@@ -265,8 +279,9 @@ class RoomScene:
 
         # Bottom floor / cozy rug line
         rug_col = accent_color or (100, 116, 139)
-        final_text.append("\n" + " " * (start_x - 1))
+        pad_x = max(0, start_x)
+        final_text.append("\n" + " " * pad_x)
         rug_style = Style(color=f"rgb({rug_col[0]//2},{rug_col[1]//2},{rug_col[2]//2})")
-        final_text.append("╭" + "─" * (mascot_w) + "╮", style=rug_style)
+        final_text.append("╭" + "─" * max(0, mascot_w - 2) + "╮", style=rug_style)
 
         return final_text
