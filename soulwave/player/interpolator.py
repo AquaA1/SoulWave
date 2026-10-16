@@ -19,9 +19,10 @@ class PositionInterpolator:
 
     def __init__(self) -> None:
         self._confirmed_position: float = 0.0
-        self._last_sync_time: float = time.monotonic()
+        self._last_sync_time: float = 0.0
         self._status: PlaybackStatus = PlaybackStatus.STOPPED
         self._duration: float = 0.0
+        self._initialized: bool = False
 
         # Optimistic seeking state
         self._desired_position: Optional[float] = None
@@ -33,7 +34,7 @@ class PositionInterpolator:
         self._stale_zero_count: int = 0
         self._last_accepted_pos: float = 0.0
         self._last_reported_pos: float = 0.0
-        self._last_accepted_time: float = time.monotonic()
+        self._last_accepted_time: float = 0.0
         self._is_uncertain: bool = False
 
     @property
@@ -82,13 +83,15 @@ class PositionInterpolator:
 
         now = timestamp if timestamp is not None else time.monotonic()
         pos = max(0.0, position_seconds)
+        old_status = self._status
         self._status = status
         self._last_reported_pos = pos
 
         if duration_seconds > 0.0:
             self._duration = duration_seconds
 
-        if is_authoritative:
+        if is_authoritative or not self._initialized or old_status != status:
+            self._initialized = True
             self._confirmed_position = pos
             self._last_sync_time = now
             self._desired_position = None
@@ -267,6 +270,7 @@ class PositionInterpolator:
             self._track_epoch += 1
 
         now = timestamp if timestamp is not None else time.monotonic()
+        self._initialized = True
         self._confirmed_position = max(0.0, initial_position)
         self._last_sync_time = now
         self._desired_position = None
