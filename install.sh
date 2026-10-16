@@ -241,7 +241,11 @@ fetch_release_assets() {
 
     local api_url
     if [ -n "${TARGET_VERSION}" ]; then
-        api_url="https://api.github.com/repos/${REPO}/releases/tags/${TARGET_VERSION}"
+        local tag_to_query="${TARGET_VERSION}"
+        if [[ "${tag_to_query}" != v* ]]; then
+            tag_to_query="v${tag_to_query}"
+        fi
+        api_url="https://api.github.com/repos/${REPO}/releases/tags/${tag_to_query}"
     else
         api_url="https://api.github.com/repos/${REPO}/releases/latest"
     fi
