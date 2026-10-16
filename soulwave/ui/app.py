@@ -161,6 +161,8 @@ class SoulwaveApp(App):
         self.accent_color: RGB = (56, 189, 248)
 
         self.current_track_key: str = ""
+        self._loaded_lyrics_track_key: str = ""
+        self._fetching_lyrics_track_key: str = ""
         self._last_state: PlayerState = PlayerState()
         self._known_durations: dict[str, float] = {}
         self._auto_dance_active: bool = False
@@ -283,8 +285,12 @@ class SoulwaveApp(App):
         # Check track change
         if track_key != self.current_track_key:
             self.current_track_key = track_key
+            self._loaded_lyrics_track_key = ""
+            self._fetching_lyrics_track_key = ""
             self._auto_dance_active = False
             self.lyrics_view.cancel_countdown()
+            self.lyrics_view.set_lyrics(None, None, duration=meta.duration_seconds)
+            self.lyrics_view.set_loading()
             if self.config.show_lyrics:
                 self.lyrics_view.display = True
                 self.companion_view.display = False
@@ -376,7 +382,11 @@ class SoulwaveApp(App):
         duration: float,
     ) -> None:
         """Fetch lyrics asynchronously or from demo mock player."""
-        if not self.config.show_lyrics:
+        current_key = f"{artist}::{title}"
+        if not bool(title.strip()):
+            self.lyrics_view.set_lyrics(None, None, duration=duration)
+            self._loaded_lyrics_track_key = current_key
+            self._fetching_lyrics_track_key = ""
             return
 
         offset = self.lyrics_cache.get_offset(artist, title)
@@ -385,8 +395,11 @@ class SoulwaveApp(App):
         if self.player_manager.is_demo:
             mock_lrc = getattr(self.player_manager.mock_player, "get_current_lyrics", lambda: "")()
             self.lyrics_view.set_lyrics(mock_lrc, None, offset=offset, duration=duration)
+            self._loaded_lyrics_track_key = current_key
+            self._fetching_lyrics_track_key = ""
             return
 
+        self._fetching_lyrics_track_key = current_key
         self.lyrics_view.set_loading()
 
         def on_lyrics_fetched(data: dict | None) -> None:
@@ -394,6 +407,9 @@ class SoulwaveApp(App):
             fetched_key = f"{artist}::{title}"
             if current_key != fetched_key:
                 return
+
+            self._loaded_lyrics_track_key = fetched_key
+            self._fetching_lyrics_track_key = ""
 
             if data and (data.get("syncedLyrics") or data.get("plainLyrics")):
                 synced = data.get("syncedLyrics")
@@ -426,6 +442,13 @@ class SoulwaveApp(App):
                         offset=offset,
                         duration=self._last_state.metadata.duration_seconds,
                     )
+                    if self.config.show_lyrics:
+                        pos = self.player_manager.current_player.get_interpolated_position()
+                        self.lyrics_view.update_position(
+                            pos,
+                            self.accent_color,
+                            self._last_state.metadata.duration_seconds,
+                        )
 
                 self.call_from_thread(apply_lyrics)
             else:
@@ -447,10 +470,13 @@ class SoulwaveApp(App):
                                 energy=energy,
                             )
 
-                    self.lyrics_view.start_no_lyrics_countdown(
-                        on_complete=on_countdown_done,
-                        countdown_seconds=5,
-                    )
+                    if self.config.show_lyrics:
+                        self.lyrics_view.start_no_lyrics_countdown(
+                            on_complete=on_countdown_done,
+                            countdown_seconds=5,
+                        )
+                    else:
+                        self.lyrics_view.set_lyrics(None, None, duration=self._last_state.metadata.duration_seconds)
 
                 self.call_from_thread(trigger_no_lyrics_fallback)
 
@@ -570,6 +596,17 @@ class SoulwaveApp(App):
                 energy=energy,
             )
         else:
+            meta = self._last_state.metadata
+            current_key = f"{meta.artist}::{meta.title}"
+            # If returning to lyrics view, ensure lyrics are up-to-date with current track
+            if self._loaded_lyrics_track_key != current_key and bool(meta.title.strip()):
+                self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
+            pos = self.player_manager.current_player.get_interpolated_position()
+            self.lyrics_view.update_position(
+                pos,
+                self.accent_color,
+                self._last_state.metadata.duration_seconds,
+            )
             self.lyrics_view.refresh()
 
     def action_toggle_visualizer(self) -> None:

@@ -1,4 +1,4 @@
-%{!?version: %global version 0.1.2}
+%{!?version: %global version 0.1.3}
 Name:           soulwave
 Version:        %{version}
 Release:        %{?release}%{!?release:1}%{?dist}
@@ -69,6 +69,11 @@ PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -m soulwave.cl
 %{_prefix}/lib/%{name}
 
 %changelog
+* Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.3-1
+- Fix stale lyrics when switching between mascot dance and lyrics view on track change
+- Enable background lyrics prefetching while companion view is active
+- Protect in-flight async lyrics queries against duplicate requests
+
 * Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.2-1
 - Fix slow/missing lyrics by prioritizing Lrclib and cleaning YouTube metadata
 - Fix mid-song position sync and backward seek handling in interpolator and D-Bus

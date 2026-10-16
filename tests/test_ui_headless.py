@@ -105,3 +105,40 @@ async def test_app_headless_lifecycle():
 
         # Press 'q' to quit
         await pilot.press("q")
+
+
+@pytest.mark.asyncio
+async def test_lyrics_update_after_mascot_dance_and_track_change():
+    """Verify that toggling to mascot dance, changing track, and toggling back to lyrics updates to the new track's lyrics."""
+    cfg = Config(theme="sunset", fps=15)
+    app = SoulwaveApp(config=cfg, force_demo=True)
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.2)
+        # Verify initial track 0 is Midnight Coffee with its lyrics loaded
+        assert app._last_state.metadata.title == "Midnight Coffee"
+        assert len(app.lyrics_view.lines) > 0
+        assert "Soft glow" in app.lyrics_view.lines[0].text
+
+        # 1. Switch to mascot companion dance ('l')
+        await pilot.press("l")
+        await pilot.pause(0.1)
+        assert app.config.show_lyrics is False
+        assert app.companion_view.display is True
+        assert app.lyrics_view.display is False
+
+        # 2. Change song to next track ('n') while in mascot dance
+        await pilot.press("n")
+        await pilot.pause(0.2)
+        assert app._last_state.metadata.title == "Synthwave Sunset"
+
+        # 3. Switch back to lyrics ('l')
+        await pilot.press("l")
+        await pilot.pause(0.2)
+        assert app.config.show_lyrics is True
+        assert app.lyrics_view.display is True
+
+        # Check that lyrics are updated to Synthwave Sunset, NOT the old Midnight Coffee!
+        assert len(app.lyrics_view.lines) > 0
+        assert "Driving down" in app.lyrics_view.lines[0].text
+        assert "Soft glow" not in app.lyrics_view.lines[0].text

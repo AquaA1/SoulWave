@@ -245,12 +245,11 @@ class LyricsClient:
         track_key = self.cache.get_track_key(artist, title)
 
         with self._lock:
-            self._latest_request_id += 1
-            request_id = self._latest_request_id
-
             if track_key in self._active_requests:
                 logger.debug("Request for track '%s' already in progress, skipping duplicate", track_key)
                 return
+            self._latest_request_id += 1
+            request_id = self._latest_request_id
             self._active_requests.add(track_key)
 
         def worker():
