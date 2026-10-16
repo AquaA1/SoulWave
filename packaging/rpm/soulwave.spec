@@ -1,0 +1,71 @@
+Name:           soulwave
+Version:        0.1.0
+Release:        1%{?dist}
+Summary:        Retro-futuristic terminal music controller with grooving soul mascot
+
+License:        MIT
+URL:            https://github.com/AquaA1/SoulWave
+Source0:        %{name}-%{version}-py3-none-any.whl
+Source1:        README.md
+Source2:        LICENSE
+
+BuildArch:      noarch
+
+BuildRequires:  python3
+
+Requires:       python3 >= 3.10
+Requires:       python3-gobject
+Requires:       python3-dbus
+
+Recommends:     playerctl
+Recommends:     cava
+
+%description
+Soulwave is a retro-futuristic terminal music controller that connects to
+active music players (Spotify, Firefox, Chromium, Cider, etc.) via MPRIS,
+renders an animated grooving pixel-art soul mascot and companions, displays
+synchronized lyrics with auto-scroll, and features an audio visualizer.
+
+%prep
+# Pre-built wheel source
+
+%build
+# No compilation required for pure Python wheel
+
+%install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}%{_prefix}/lib/%{name}/vendor
+mkdir -p %{buildroot}%{_bindir}
+
+# Install soulwave wheel into isolated vendor directory
+%{__python3} -m pip install --no-deps --target %{buildroot}%{_prefix}/lib/%{name}/vendor %{SOURCE0}
+
+# If pre-bundled vendor wheels are included in sources, install them
+if [ -d %{_sourcedir}/vendor_wheels ] && compgen -G "%{_sourcedir}/vendor_wheels/*.whl" > /dev/null; then
+    %{__python3} -m pip install --no-deps --target %{buildroot}%{_prefix}/lib/%{name}/vendor %{_sourcedir}/vendor_wheels/*.whl
+fi
+
+# Install doc and license
+install -D -m 0644 %{SOURCE1} %{buildroot}%{_docdir}/%{name}/README.md
+install -D -m 0644 %{SOURCE2} %{buildroot}%{_licensedir}/%{name}/LICENSE
+
+# Create launcher script in /usr/bin/soulwave
+cat << 'EOF' > %{buildroot}%{_bindir}/%{name}
+#!/bin/sh
+export PYTHONPATH="%{_prefix}/lib/soulwave/vendor:${PYTHONPATH}"
+exec /usr/bin/python3 -m soulwave.cli "$@"
+EOF
+chmod 0755 %{buildroot}%{_bindir}/%{name}
+
+%check
+PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -c "import soulwave; print(soulwave.__file__)"
+
+%files
+%{_docdir}/%{name}
+%{_licensedir}/%{name}
+%{_bindir}/%{name}
+%{_prefix}/lib/%{name}
+
+%changelog
+* Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.0-1
+- Production release of Soulwave

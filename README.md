@@ -33,21 +33,86 @@
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Installation
 
-### Installation
+### One-Liner Install (Recommended)
 
-Clone and install into your environment:
+Install Soulwave with a single command — no virtual environment activation, alias creation, or PATH editing required:
 
 ```bash
-git clone https://github.com/soulwave/soulwave.git
-cd Soulwave
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 ```
 
-### Launching
+Once installed, simply type:
+
+```bash
+soulwave
+```
+
+#### Prefer to inspect the installer first?
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh
+less install.sh
+bash install.sh
+```
+
+---
+
+### Fedora Linux (Native RPM)
+
+On Fedora, CentOS Stream, RHEL, Rocky, and AlmaLinux, the curl installer automatically downloads and installs the native RPM package with isolated application runtime at `/usr/lib/soulwave` and standard launcher at `/usr/bin/soulwave`:
+
+```bash
+# Via curl installer (auto-detects Fedora and installs native RPM)
+curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
+
+# Or install manually from a downloaded release RPM:
+sudo dnf install ./soulwave-*.noarch.rpm
+```
+
+### Other Linux Distributions (Ubuntu, Debian, Arch, openSUSE)
+
+On non-RPM distributions, `install.sh` automatically configures a self-contained, PEP 668-compliant application runtime in `/opt/soulwave` with an executable launcher in `/usr/local/bin/soulwave` (or `~/.local/share/soulwave` with `~/.local/bin/soulwave` if installing as non-root without sudo).
+
+### Optional Audio Tools
+
+Soulwave runs out of the box with an internal mock player and audio fallback. To enable live MPRIS player synchronization and audio frequency spectrum visualization, install `playerctl` and `cava`:
+
+- **Fedora / RHEL**: `sudo dnf install playerctl cava`
+- **Ubuntu / Debian**: `sudo apt install playerctl cava`
+- **Arch Linux**: `sudo pacman -S playerctl cava`
+
+---
+
+### Updating & Upgrading
+
+To update Soulwave to the latest release:
+
+```bash
+# Re-run the installer anytime
+curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
+
+# On Fedora (if installed via RPM):
+sudo dnf upgrade soulwave
+```
+
+---
+
+### Uninstallation
+
+To remove Soulwave cleanly from your system:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --uninstall
+
+# Or on Fedora:
+sudo dnf remove soulwave
+```
+
+---
+
+## 🎮 Launching & Options
 
 ```bash
 # Launch normal auto-detect mode (picks up your active media player)

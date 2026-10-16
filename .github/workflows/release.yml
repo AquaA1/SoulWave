@@ -1,0 +1,136 @@
+name: Release Pipeline
+
+'on':
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: |
+          pytest -v
+
+  build-python:
+    name: Build Wheel and Source Distribution
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip build wheel
+
+      - name: Build distributions
+        run: |
+          python -m build --sdist --wheel --outdir dist/
+
+      - name: Upload Python distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+          retention-days: 1
+
+  build-rpm:
+    name: Build Native Fedora RPM
+    needs: [test, build-python]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Python distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: dist
+
+      - name: Build RPM inside Fedora container
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            fedora:41 \
+            bash -c "
+              set -euo pipefail
+              dnf install -y rpm-build python3-devel python3-pip python3-wheel python3-setuptools
+              VERSION=\$(grep -E '^version = ' pyproject.toml | head -n 1 | cut -d '\"' -f 2)
+              ./packaging/rpm/build_rpm.sh \"\${VERSION}\" 1
+            "
+
+      - name: Upload RPM distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-dist
+          path: dist/*.rpm
+          retention-days: 1
+
+  release:
+    name: Publish GitHub Release
+    needs: [test, build-python, build-rpm]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download Python distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-dist
+          path: release-artifacts
+
+      - name: Download RPM distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-dist
+          path: release-artifacts
+
+      - name: Generate SHA-256 Checksums
+        working-directory: release-artifacts
+        run: |
+          sha256sum * > checksums.txt
+          echo "Generated Checksums:"
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
