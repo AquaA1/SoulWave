@@ -29,6 +29,7 @@ from .widgets.progress_bar import ProgressBarView
 from .widgets.controls import ControlsView
 from .widgets.lyrics_panel import LyricsPanelView
 from .widgets.visualizer import VisualizerView
+from .widgets.companion_view import CompanionDanceView
 
 
 
@@ -161,6 +162,9 @@ class SoulwaveApp(App):
 
         self.current_track_key: str = ""
         self._last_state: PlayerState = PlayerState()
+        self._known_durations: dict[str, float] = {}
+        self._auto_dance_active: bool = False
+        self._no_lyrics_track_key: str = ""
 
         # Widgets
         self.mascot_view = MascotView(self.mascot_animator, self.scene, id="mascot-view")
@@ -168,6 +172,7 @@ class SoulwaveApp(App):
         self.progress_bar_view = ProgressBarView(id="progress-bar-view")
         self.controls_view = ControlsView(id="controls-view")
         self.lyrics_view = LyricsPanelView(id="lyrics-view")
+        self.companion_view = CompanionDanceView(id="companion-view")
         self.visualizer_view = VisualizerView(id="visualizer-view")
         self.top_bar = Static(id="top-bar")
 
@@ -182,6 +187,7 @@ class SoulwaveApp(App):
                         yield self.now_playing_view
                     with Container(id="lyrics-container"):
                         yield self.lyrics_view
+                        yield self.companion_view
             with Vertical(id="bottom-controls"):
                 yield self.progress_bar_view
                 yield self.controls_view
@@ -191,6 +197,9 @@ class SoulwaveApp(App):
     def on_mount(self) -> None:
         if self.config.mini_mode:
             self.screen.add_class("mini-mode")
+
+        self.lyrics_view.display = self.config.show_lyrics
+        self.companion_view.display = not self.config.show_lyrics
 
         self._apply_theme()
         self._sync_player_state()
@@ -253,21 +262,48 @@ class SoulwaveApp(App):
     def _sync_player_state(self) -> None:
         """Fetch latest authoritative player state from MPRIS or demo."""
         state = self.player_manager.get_state()
+        meta = state.metadata
+        track_key = f"{meta.artist}::{meta.title}"
+
+        # If state duration is valid, cache it for this track
+        if meta.duration_seconds > 0.0:
+            self._known_durations[track_key] = meta.duration_seconds
+        elif track_key in self._known_durations:
+            # Restore duration from track duration cache if MPRIS is temporarily buffering/missing
+            meta.duration_seconds = self._known_durations[track_key]
+        elif (
+            self._last_state.metadata.duration_seconds > 0.0
+            and track_key == self.current_track_key
+        ):
+            # Same track, keep known duration
+            meta.duration_seconds = self._last_state.metadata.duration_seconds
+
         self._last_state = state
 
-        meta = state.metadata
         # Check track change
-        track_key = f"{meta.artist}::{meta.title}"
         if track_key != self.current_track_key:
             self.current_track_key = track_key
+            self._auto_dance_active = False
+            self.lyrics_view.cancel_countdown()
+            if self.config.show_lyrics:
+                self.lyrics_view.display = True
+                self.companion_view.display = False
+            else:
+                self.lyrics_view.display = False
+                self.companion_view.display = True
+
             self.accent_color = get_song_accent_color(meta.title, meta.artist)
             self.mascot_animator.set_track(meta.title, meta.artist)
             self.mascot_animator.set_accent_color(self.accent_color)
             self.mascot_view.accent_color = self.accent_color
 
             # Update lyrics
+            self.lyrics_view.duration_seconds = meta.duration_seconds
             self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
             self._update_top_bar()
+        else:
+            if meta.duration_seconds > 0.0:
+                self.lyrics_view.duration_seconds = meta.duration_seconds
 
         # Update animator base state
         is_playing = state.status == PlaybackStatus.PLAYING
@@ -300,9 +336,21 @@ class SoulwaveApp(App):
             self.accent_color,
         )
 
-        # Update lyrics scrolling
-        if self.config.show_lyrics:
-            self.lyrics_view.update_position(pos, self.accent_color)
+        # Update lyrics scrolling or companion dance view
+        if self.companion_view.display:
+            energy = getattr(self.visualizer_view, "current_energy", 0.0)
+            self.companion_view.update_state(
+                is_playing=is_playing,
+                is_paused=is_paused,
+                accent=self.accent_color,
+                energy=energy,
+            )
+        if self.lyrics_view.display:
+            self.lyrics_view.update_position(
+                pos,
+                self.accent_color,
+                self._last_state.metadata.duration_seconds,
+            )
 
         # Update visualizer
         if self.config.show_visualizer:
@@ -329,13 +377,18 @@ class SoulwaveApp(App):
         # If in demo mode and mock player has lyrics, use them directly
         if self.player_manager.is_demo:
             mock_lrc = getattr(self.player_manager.mock_player, "get_current_lyrics", lambda: "")()
-            self.lyrics_view.set_lyrics(mock_lrc, None, offset=offset)
+            self.lyrics_view.set_lyrics(mock_lrc, None, offset=offset, duration=duration)
             return
 
         self.lyrics_view.set_loading()
 
         def on_lyrics_fetched(data: dict | None) -> None:
-            if data:
+            current_key = f"{self._last_state.metadata.artist}::{self._last_state.metadata.title}"
+            fetched_key = f"{artist}::{title}"
+            if current_key != fetched_key:
+                return
+
+            if data and (data.get("syncedLyrics") or data.get("plainLyrics")):
                 synced = data.get("syncedLyrics")
                 plain = data.get("plainLyrics")
                 lrclib_dur = data.get("duration")
@@ -344,6 +397,7 @@ class SoulwaveApp(App):
                         d_val = float(lrclib_dur)
                         if d_val > 0.0:
                             self._last_state.metadata.duration_seconds = d_val
+                            self._known_durations[current_key] = d_val
                             if hasattr(self.player_manager.current_player, "_interpolator"):
                                 self.player_manager.current_player._interpolator.sync(
                                     self._last_state.position_seconds,
@@ -352,9 +406,46 @@ class SoulwaveApp(App):
                                 )
                     except (ValueError, TypeError):
                         pass
-                self.call_from_thread(self.lyrics_view.set_lyrics, synced, plain, offset)
+
+                def apply_lyrics():
+                    self.lyrics_view.cancel_countdown()
+                    self._auto_dance_active = False
+                    if self.config.show_lyrics:
+                        self.lyrics_view.display = True
+                        self.companion_view.display = False
+                    self.lyrics_view.set_lyrics(
+                        synced,
+                        plain,
+                        offset=offset,
+                        duration=self._last_state.metadata.duration_seconds,
+                    )
+
+                self.call_from_thread(apply_lyrics)
             else:
-                self.call_from_thread(self.lyrics_view.set_lyrics, None, None, offset)
+                def trigger_no_lyrics_fallback():
+                    if self._no_lyrics_track_key == current_key and (self.lyrics_view.is_countdown_active or self._auto_dance_active):
+                        return
+                    self._no_lyrics_track_key = current_key
+
+                    def on_countdown_done():
+                        if self.config.show_lyrics:
+                            self._auto_dance_active = True
+                            self.lyrics_view.display = False
+                            self.companion_view.display = True
+                            energy = getattr(self.visualizer_view, "current_energy", 0.0)
+                            self.companion_view.update_state(
+                                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                                accent=self.accent_color,
+                                energy=energy,
+                            )
+
+                    self.lyrics_view.start_no_lyrics_countdown(
+                        on_complete=on_countdown_done,
+                        countdown_seconds=5,
+                    )
+
+                self.call_from_thread(trigger_no_lyrics_fallback)
 
         self.lyrics_client.fetch_lyrics_async(
             artist=artist,
@@ -394,6 +485,12 @@ class SoulwaveApp(App):
             self._last_state.metadata.duration_seconds,
             self.accent_color,
         )
+        if self.config.show_lyrics:
+            self.lyrics_view.update_position(
+                pos,
+                self.accent_color,
+                self._last_state.metadata.duration_seconds,
+            )
 
     def action_seek_backward(self) -> None:
         self.player_manager.current_player.seek(-self.config.seek_step_seconds)
@@ -404,6 +501,12 @@ class SoulwaveApp(App):
             self._last_state.metadata.duration_seconds,
             self.accent_color,
         )
+        if self.config.show_lyrics:
+            self.lyrics_view.update_position(
+                pos,
+                self.accent_color,
+                self._last_state.metadata.duration_seconds,
+            )
 
     def action_volume_up(self) -> None:
         new_vol = min(1.0, self._last_state.volume + self.config.volume_step_percent)
@@ -435,11 +538,28 @@ class SoulwaveApp(App):
 
     def action_toggle_lyrics(self) -> None:
         self.config.show_lyrics = not self.config.show_lyrics
-        lyr_container = self.query_one("#lyrics-container")
-        lyr_container.display = self.config.show_lyrics
-        if self.config.show_lyrics:
-            meta = self._last_state.metadata
-            self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
+        if self._auto_dance_active:
+            if self.config.show_lyrics:
+                self._auto_dance_active = False
+                self.lyrics_view.display = True
+                self.companion_view.display = False
+            else:
+                self.lyrics_view.display = False
+                self.companion_view.display = True
+        else:
+            self.lyrics_view.display = self.config.show_lyrics
+            self.companion_view.display = not self.config.show_lyrics
+
+        if not self.lyrics_view.display:
+            energy = getattr(self.visualizer_view, "current_energy", 0.0)
+            self.companion_view.update_state(
+                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                accent=self.accent_color,
+                energy=energy,
+            )
+        else:
+            self.lyrics_view.refresh()
 
     def action_toggle_visualizer(self) -> None:
         self.config.show_visualizer = not self.config.show_visualizer
@@ -484,6 +604,12 @@ class SoulwaveApp(App):
             self._last_state.metadata.duration_seconds,
             self.accent_color,
         )
+        if self.config.show_lyrics:
+            self.lyrics_view.update_position(
+                pos,
+                self.accent_color,
+                self._last_state.metadata.duration_seconds,
+            )
 
     def on_controls_view_action_triggered(self, message: ControlsView.ActionTriggered) -> None:
         action_map = {

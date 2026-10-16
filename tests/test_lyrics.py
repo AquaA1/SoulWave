@@ -178,3 +178,47 @@ def test_lyrics_client_network_failure(mock_search):
         # Must not raise exception, returns None gracefully
         res = client.fetch_lyrics_sync("Artist", "Offline Track")
         assert res is None
+
+
+def test_plain_lyrics_progressive_scrolling():
+    from soulwave.ui.widgets.lyrics_panel import LyricsPanelView
+
+    panel = LyricsPanelView()
+    plain = """Line 1: First verse
+Line 2: Second verse
+Line 3: Chorus starts
+Line 4: Chorus ends
+Line 5: Outro"""
+    panel.set_lyrics(None, plain, duration=100.0)
+
+    # At t=0s, active line should be Line 1
+    panel.update_position(0.0, (56, 189, 248), duration=100.0)
+    render_0 = panel.render().plain
+    assert "▸ Line 1: First verse" in render_0
+
+    # At t=50s (midpoint of 100s), active line should be Line 3 (index 2)
+    panel.update_position(50.0, (56, 189, 248), duration=100.0)
+    render_50 = panel.render().plain
+    assert "▸ Line 3: Chorus starts" in render_50
+
+    # Pausing: position unchanging keeps reading position frozen
+    panel.update_position(50.0, (56, 189, 248), duration=100.0)
+    render_paused = panel.render().plain
+    assert "▸ Line 3: Chorus starts" in render_paused
+
+    # Seeking: jumping to 95s recalculates active line immediately to Outro
+    panel.update_position(95.0, (56, 189, 248), duration=100.0)
+    render_seek = panel.render().plain
+    assert "▸ Line 5: Outro" in render_seek
+
+    # Missing duration fallback: duration_seconds = 0.0 uses safe fallback
+    panel.set_lyrics(None, plain, duration=0.0)
+    panel.update_position(10.0, (56, 189, 248), duration=0.0)
+    render_fallback = panel.render().plain
+    assert "── PLAIN LYRICS (UNSYNCHRONIZED) ──" in render_fallback
+    assert "▸ " in render_fallback
+
+    # Empty lyrics handling
+    panel.set_lyrics(None, "")
+    render_empty = panel.render().plain
+    assert "No lyrics found" in render_empty

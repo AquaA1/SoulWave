@@ -505,6 +505,7 @@ class MPRISPlayer(BasePlayer):
                 ShuffleStatus.ON if bool(props["Shuffle"]) else ShuffleStatus.OFF
             )
 
+        is_new_track = False
         if "Metadata" in props:
             meta = props["Metadata"]
             track_id = str(meta.get("mpris:trackid", "")) or None
@@ -526,9 +527,22 @@ class MPRISPlayer(BasePlayer):
                 or (title_val and old_title and title_val != old_title)
             )
 
-            length_raw = meta.get("mpris:length", 0)
+            length_raw = (
+                meta.get("mpris:length")
+                or meta.get("xesam:length")
+                or meta.get("xesam:duration")
+                or meta.get("duration")
+                or meta.get("length")
+                or 0
+            )
             try:
-                duration_sec = max(0.0, float(length_raw) / 1_000_000.0) if length_raw else 0.0
+                raw_val = float(length_raw)
+                if raw_val > 10_000_000:
+                    duration_sec = max(0.0, raw_val / 1_000_000.0)
+                elif raw_val > 10_000:
+                    duration_sec = max(0.0, raw_val / 1_000.0)
+                else:
+                    duration_sec = max(0.0, raw_val)
             except (ValueError, TypeError):
                 duration_sec = 0.0
 
@@ -664,7 +678,13 @@ class MPRISPlayer(BasePlayer):
         track_id_str = parts[10].strip() if len(parts) > 10 else f"{artist_str}:{title_str}"
 
         try:
-            duration_sec = max(0.0, float(length_str) / 1_000_000.0) if length_str else 0.0
+            raw_len = float(length_str) if length_str else 0.0
+            if raw_len > 10_000_000:
+                duration_sec = max(0.0, raw_len / 1_000_000.0)
+            elif raw_len > 10_000:
+                duration_sec = max(0.0, raw_len / 1_000.0)
+            else:
+                duration_sec = max(0.0, raw_len)
         except ValueError:
             duration_sec = 0.0
 
@@ -686,6 +706,9 @@ class MPRISPlayer(BasePlayer):
             (track_id_str and self._last_state.metadata.track_id and track_id_str != self._last_state.metadata.track_id)
             or (title_str and self._last_state.metadata.title and title_str != self._last_state.metadata.title)
         )
+
+        if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
+            duration_sec = self._last_state.metadata.duration_seconds
 
         if is_new_track:
             self._track_epoch += 1

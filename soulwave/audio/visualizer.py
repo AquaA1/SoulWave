@@ -16,6 +16,7 @@ class AudioVisualizer:
     """Generates animated audio spectrum bars for the bottom panel."""
 
     BAR_CHARS = [" ", " ", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
+    DEFAULT_HEIGHT: int = 2  # Height in terminal text rows (~1.5x original single-line height)
 
     def __init__(self, num_bars: int = 32, max_height: int = 2) -> None:
         self.num_bars = num_bars
@@ -30,6 +31,7 @@ class AudioVisualizer:
         volume: float = 0.8,
         bpm: float = 100.0,
         accent_color: RGB | None = None,
+        height: int = DEFAULT_HEIGHT,
     ) -> Text:
         """Advance spectrum frame and return styled Rich Text."""
         dt = 0.08
@@ -58,21 +60,61 @@ class AudioVisualizer:
             else:
                 self.peaks[i] = max(0.0, self.peaks[i] - 0.05)
 
-        # Render bars into Rich Text
-        text = Text()
         col = accent_color or (56, 189, 248)
+        num_rows = max(1, height)
 
-        for i, val in enumerate(self.levels):
-            char_idx = int(round(val * (len(self.BAR_CHARS) - 1)))
-            char_idx = max(0, min(len(self.BAR_CHARS) - 1, char_idx))
-            ch = self.BAR_CHARS[char_idx]
+        if num_rows == 1:
+            # Single-row rendering (fallback / compact mode)
+            text = Text()
+            for val in self.levels:
+                char_idx = int(round(val * (len(self.BAR_CHARS) - 1)))
+                char_idx = max(0, min(len(self.BAR_CHARS) - 1, char_idx))
+                ch = self.BAR_CHARS[char_idx]
 
-            # Gradient color from base to peak
-            r = int(min(255, col[0] * (0.6 + val * 0.4)))
-            g = int(min(255, col[1] * (0.6 + val * 0.4)))
-            b = int(min(255, col[2] * (0.6 + val * 0.4)))
+                r = int(min(255, col[0] * (0.6 + val * 0.4)))
+                g = int(min(255, col[1] * (0.6 + val * 0.4)))
+                b = int(min(255, col[2] * (0.6 + val * 0.4)))
 
-            text.append(ch, style=Style(color=f"rgb({r},{g},{b})"))
-            text.append(" ")
+                text.append(ch, style=Style(color=f"rgb({r},{g},{b})"))
+                text.append(" ")
+            return text
 
-        return text
+        # Multi-row rendering: row 0 is top, row num_rows-1 is bottom base
+        row_texts = [Text() for _ in range(num_rows)]
+
+        for val in self.levels:
+            total_amp = val * num_rows
+
+            for r_idx in range(num_rows):
+                # Row index from bottom upward:
+                # base row (bottom) corresponds to [0.0, 1.0)
+                # row above base corresponds to [1.0, 2.0), etc.
+                level_from_bottom = (num_rows - 1) - r_idx
+                amp_in_row = total_amp - level_from_bottom
+
+                if amp_in_row >= 1.0:
+                    ch = self.BAR_CHARS[-1]
+                    intensity = 0.5 + (0.5 * ((level_from_bottom + 1) / num_rows))
+                elif amp_in_row > 0.0:
+                    char_idx = int(round(amp_in_row * (len(self.BAR_CHARS) - 1)))
+                    char_idx = max(0, min(len(self.BAR_CHARS) - 1, char_idx))
+                    ch = self.BAR_CHARS[char_idx]
+                    intensity = 0.4 + (0.6 * ((level_from_bottom + amp_in_row) / num_rows))
+                else:
+                    ch = " "
+                    intensity = 0.4
+
+                r = int(min(255, col[0] * intensity))
+                g = int(min(255, col[1] * intensity))
+                b = int(min(255, col[2] * intensity))
+
+                row_texts[r_idx].append(ch, style=Style(color=f"rgb({r},{g},{b})"))
+                row_texts[r_idx].append(" ")
+
+        final_text = Text()
+        for idx, row in enumerate(row_texts):
+            final_text.append_text(row)
+            if idx < len(row_texts) - 1:
+                final_text.append("\n")
+
+        return final_text

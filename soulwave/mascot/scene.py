@@ -40,6 +40,18 @@ class RoomScene:
         self.stars_grid: List[Tuple[int, int, str, int]] = []  # x, y, char, brightness
         self._init_stars()
 
+        # Deterministic ambient music symbols anchored around the mascot
+        # (mascot occupies roughly cols 8..25, rows 2..9 in a 34x12 scene)
+        self._ambient_phase: float = 0.0
+        self._is_playing: bool = False
+        self._is_paused: bool = False
+        self._is_idle: bool = True
+        self.ambient_symbols = [
+            {"base_x": 4.5, "base_y": 2.5, "char": "♪", "phase_offset": 0.0},
+            {"base_x": 28.5, "base_y": 2.5, "char": "♫", "phase_offset": 2.1},
+            {"base_x": 30.0, "base_y": 6.0, "char": "✧", "phase_offset": 4.2},
+        ]
+
     def _init_stars(self) -> None:
         """Place a few subtle background stars."""
         self.stars_grid.clear()
@@ -87,10 +99,28 @@ class RoomScene:
             )
         )
 
-    def update(self, is_playing: bool, is_paused: bool, accent_color: RGBColor | None = None) -> None:
+    def update(
+        self,
+        is_playing: bool,
+        is_paused: bool,
+        accent_color: RGBColor | None = None,
+        is_idle: bool = False,
+    ) -> None:
         """Update particle physics and spawn new notes."""
         now = time.monotonic()
         dt = 0.08  # Approx tick delta
+
+        self._is_playing = is_playing
+        self._is_paused = is_paused
+        self._is_idle = is_idle or (not is_playing and not is_paused)
+
+        # Advance deterministic ambient music symbols clock
+        if is_playing:
+            self._ambient_phase += dt * 2.5
+        elif is_paused:
+            self._ambient_phase += dt * 0.7
+        else:
+            self._ambient_phase += dt * 0.2
 
         # Spawn notes while playing
         if is_playing and now - self._last_spawn > random.uniform(0.9, 1.8):
@@ -135,6 +165,55 @@ class RoomScene:
                 canvas_chars[sy][sx] = schar
                 canvas_styles[sy][sx] = Style(color=f"rgb({brightness},{brightness},{brightness})")
 
+        # Mascot top-left placement (centered)
+        start_x = max(0, (self.width - mascot_w) // 2)
+        start_y = max(0, (self.height - mascot_h) // 2)
+
+        # Draw subtle ambient music symbols around mascot (unobstructed)
+        col = accent_color or (56, 189, 248)
+        if self._is_idle:
+            # Idle/sleeping: show only 1 subtle resting sparkle
+            active_symbols = self.ambient_symbols[:1]
+            base_intensity = 0.25
+        elif self._is_paused:
+            # Paused: reduced activity, 2 calm symbols with dim lighting
+            active_symbols = self.ambient_symbols[:2]
+            base_intensity = 0.40
+        else:
+            # Playing: all 3 symbols gently pulse and float
+            active_symbols = self.ambient_symbols
+            base_intensity = 0.75
+
+        for sym in active_symbols:
+            phi = sym["phase_offset"]
+            if self._is_playing:
+                dy = math.sin(self._ambient_phase + phi) * 0.55
+                dx = math.cos(self._ambient_phase * 0.7 + phi) * 0.35
+                pulse = 0.5 + 0.5 * abs(math.sin(self._ambient_phase * 1.2 + phi))
+            elif self._is_paused:
+                dy = math.sin(self._ambient_phase + phi) * 0.2
+                dx = 0.0
+                pulse = 0.6
+            else:
+                dy = 0.0
+                dx = 0.0
+                pulse = 0.3
+
+            sx = int(round(sym["base_x"] + dx))
+            sy = int(round(sym["base_y"] + dy))
+
+            # Ensure symbol stays outside the mascot bounds
+            if start_y <= sy < start_y + mascot_h and start_x <= sx < start_x + mascot_w:
+                sx = start_x - 2 if sx < self.width // 2 else start_x + mascot_w + 2
+
+            if 0 <= sy < self.height and 0 <= sx < self.width:
+                canvas_chars[sy][sx] = sym["char"]
+                intensity = base_intensity * pulse
+                r = int(min(255, col[0] * intensity + 30))
+                g = int(min(255, col[1] * intensity + 30))
+                b = int(min(255, col[2] * intensity + 45))
+                canvas_styles[sy][sx] = Style(color=f"rgb({r},{g},{b})", bold=self._is_playing)
+
         # Draw floating particles
         for p in self.particles:
             px, py = int(round(p.x)), int(round(p.y))
@@ -146,10 +225,6 @@ class RoomScene:
                 g = int(p.color[1] * fade)
                 b = int(p.color[2] * fade)
                 canvas_styles[py][px] = Style(color=f"rgb({r},{g},{b})", bold=True)
-
-        # Mascot top-left placement (centered)
-        start_x = max(0, (self.width - mascot_w) // 2)
-        start_y = max(0, (self.height - mascot_h) // 2)
 
         # Assemble final Rich Text
         final_text = Text()

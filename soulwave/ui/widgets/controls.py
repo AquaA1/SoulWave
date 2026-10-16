@@ -52,39 +52,46 @@ class ControlsView(Widget):
             bgcolor=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})",
             bold=True,
         )
-        dim_style = Style(color="rgb(148, 163, 184)")
+        label_dim = Style(color="rgb(100, 116, 139)")
+        val_style = Style(color="rgb(226, 232, 240)")
+        active_style = Style(
+            color=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})",
+            bold=True,
+        )
 
         # Prev button
-        t.append(" ⏮ Prev ", style=btn_style)
+        t.append(" Prev ", style=btn_style)
         t.append("  ")
 
         # Play/Pause button
         if self.state.status == PlaybackStatus.PLAYING:
-            t.append(" ⏸ Pause ", style=acc_btn)
+            t.append(" Pause ", style=acc_btn)
         else:
-            t.append(" ▶ Play ", style=acc_btn)
+            t.append(" Play ", style=acc_btn)
         t.append("  ")
 
         # Next button
-        t.append(" ⏭ Next ", style=btn_style)
+        t.append(" Next ", style=btn_style)
         t.append("    ")
 
         # Volume
         vol_pct = int(self.state.volume * 100)
-        vol_icon = "🔇" if vol_pct == 0 else ("🔉" if vol_pct < 50 else "🔊")
-        t.append(f"{vol_icon} {vol_pct}%", style=Style(color="rgb(226, 232, 240)"))
+        t.append("Vol: ", style=label_dim)
+        t.append(f"{vol_pct}%", style=val_style)
         t.append("   ")
 
         # Shuffle
         shuffle_active = self.state.shuffle == ShuffleStatus.ON
-        shuf_st = Style(color="rgb(56, 189, 248)", bold=True) if shuffle_active else dim_style
-        t.append(f"🔀 {'On' if shuffle_active else 'Off'}", style=shuf_st)
+        shuf_st = active_style if shuffle_active else label_dim
+        t.append("Shuffle: ", style=label_dim)
+        t.append(f"{'On' if shuffle_active else 'Off'}", style=shuf_st)
         t.append("   ")
 
         # Loop
         loop_active = self.state.loop != LoopStatus.NONE
-        loop_st = Style(color="rgb(56, 189, 248)", bold=True) if loop_active else dim_style
-        t.append(f"🔁 {self.state.loop.value}", style=loop_st)
+        loop_st = active_style if loop_active else label_dim
+        t.append("Loop: ", style=label_dim)
+        t.append(f"{self.state.loop.value}", style=loop_st)
 
         return t
 
@@ -92,13 +99,13 @@ class ControlsView(Widget):
         """Handle clicks on controls."""
         # Simple coordinate-based button routing
         x = event.x
-        if 2 <= x <= 12:
+        if 0 <= x <= 7:
             self.post_message(self.ActionTriggered("previous"))
-        elif 14 <= x <= 26:
+        elif 8 <= x <= 17:
             self.post_message(self.ActionTriggered("play_pause"))
-        elif 28 <= x <= 38:
+        elif 18 <= x <= 26:
             self.post_message(self.ActionTriggered("next"))
-        elif 50 <= x <= 62:
+        elif 36 <= x <= 53:
             self.post_message(self.ActionTriggered("shuffle"))
-        elif 64 <= x <= 78:
+        elif 54 <= x <= 72:
             self.post_message(self.ActionTriggered("loop"))

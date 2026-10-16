@@ -56,8 +56,8 @@ Screen {
 }
 
 #visualizer-container {
-    height: 1;
-    margin: 1 0;
+    height: 2;
+    margin: 0;
 }
 
 /* --- Mini Mode Styles --- */

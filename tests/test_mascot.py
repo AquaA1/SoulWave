@@ -79,3 +79,29 @@ def test_room_scene_particles():
     scene.update(is_playing=True, is_paused=False)
     # Particles update coordinates
     assert scene.particles[0].lifetime > 0
+
+
+def test_room_scene_ambient_symbols():
+    scene = RoomScene(width=34, height=12)
+    # 2-3 subtle symbols anchored outside mascot
+    assert 2 <= len(scene.ambient_symbols) <= 3
+    for sym in scene.ambient_symbols:
+        assert sym["char"] in ["♪", "♫", "✧", "✦"]
+        # Positioned outside center mascot area (x < 7 or x > 26)
+        assert sym["base_x"] < 7.0 or sym["base_x"] > 26.0
+
+    # Advance when playing
+    init_phase = scene._ambient_phase
+    scene.update(is_playing=True, is_paused=False)
+    assert scene._ambient_phase > init_phase
+    assert scene._is_playing is True
+
+    # When paused: slower advance and paused flag set
+    p_phase = scene._ambient_phase
+    scene.update(is_playing=False, is_paused=True)
+    assert scene._is_paused is True
+    assert scene._ambient_phase > p_phase
+
+    # When idle: sleeping state
+    scene.update(is_playing=False, is_paused=False, is_idle=True)
+    assert scene._is_idle is True

@@ -18,12 +18,35 @@ async def test_app_headless_lifecycle():
         assert app.progress_bar_view is not None
         assert app.controls_view is not None
         assert app.lyrics_view is not None
+        assert app.companion_view is not None
 
         # Give the app a couple of ticks
         await pilot.pause(0.2)
 
         # Initial playback state in demo should be PLAYING
         assert app._last_state.status == PlaybackStatus.PLAYING
+
+        # Test toggling 'l' to hide lyrics and show companion dance view
+        assert app.config.show_lyrics is True
+        assert app.lyrics_view.display is True
+        assert app.companion_view.display is False
+
+        await pilot.press("l")
+        await pilot.pause(0.1)
+        assert app.config.show_lyrics is False
+        assert app.lyrics_view.display is False
+        assert app.companion_view.display is True
+        c_text = app.companion_view.render().plain
+        assert "Pip" in c_text
+        assert "Nova" in c_text
+        assert "Mochi" in c_text
+
+        # Toggle 'l' back to restore lyrics view
+        await pilot.press("l")
+        await pilot.pause(0.1)
+        assert app.config.show_lyrics is True
+        assert app.lyrics_view.display is True
+        assert app.companion_view.display is False
 
         # Press space to pause
         await pilot.press("space")
