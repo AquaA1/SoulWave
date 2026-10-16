@@ -14,11 +14,23 @@ RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 DIST_DIR = REPO_ROOT / "dist"
 VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
 
+import re
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib  # type: ignore
+    except ImportError:
+        tomllib = None  # type: ignore
 
 PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
-PROJECT_VERSION = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))["project"]["version"]
+if tomllib is not None:
+    PROJECT_VERSION = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))["project"]["version"]
+else:
+    _match = re.search(r'version\s*=\s*"([^"]+)"', PYPROJECT_TOML.read_text(encoding="utf-8"))
+    PROJECT_VERSION = _match.group(1) if _match else "0.1.2"
 
 
 def get_built_rpm(version: str = PROJECT_VERSION):
