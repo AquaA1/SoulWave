@@ -89,12 +89,12 @@ def test_explicit_seek_to_zero_is_preserved():
     interp.sync(position_seconds=45.0, status=PlaybackStatus.PLAYING, duration_seconds=180.0, timestamp=t0)
 
     # User explicitly seeks to 0.0
-    desired = interp.start_seek(0.0)
+    desired = interp.start_seek(0.0, timestamp=t0)
     assert desired == 0.0
     assert interp.get_position(now=t0) == 0.0
 
     # Confirmation of 0.0 seek
-    interp.confirm_seek(0.0)
+    interp.confirm_seek(0.0, timestamp=t0)
     assert interp.get_position(now=t0) == 0.0
 
 

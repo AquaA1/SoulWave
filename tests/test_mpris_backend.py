@@ -18,7 +18,7 @@ def test_interpolator_desired_vs_confirmed_position():
     assert not interp.is_seeking()
 
     # User initiates seek to 50.0s
-    desired = interp.start_seek(50.0)
+    desired = interp.start_seek(50.0, timestamp=t0)
     assert desired == 50.0
     assert interp.is_seeking()
     assert interp.get_position(now=t0) == 50.0
@@ -49,20 +49,20 @@ def test_interpolator_rapid_relative_seeks():
     interp.sync(20.0, PlaybackStatus.PAUSED, 100.0, timestamp=t0)
 
     # 3 rapid keypresses of +5s each
-    p1 = interp.step_relative_seek(5.0)
+    p1 = interp.step_relative_seek(5.0, timestamp=t0)
     assert p1 == 25.0
     assert interp.get_seek_seq() == 1
 
-    p2 = interp.step_relative_seek(5.0)
+    p2 = interp.step_relative_seek(5.0, timestamp=t0)
     assert p2 == 30.0
     assert interp.get_seek_seq() == 2
 
-    p3 = interp.step_relative_seek(5.0)
+    p3 = interp.step_relative_seek(5.0, timestamp=t0)
     assert p3 == 35.0
     assert interp.get_seek_seq() == 3
 
-    assert interp.get_position() == 35.0
-    assert interp.get_confirmed_position() == 20.0
+    assert interp.get_position(now=t0) == 35.0
+    assert interp.get_confirmed_position(now=t0) == 20.0
 
 
 def test_interpolator_clamping():
