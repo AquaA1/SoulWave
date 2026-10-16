@@ -62,6 +62,19 @@ def test_install_script_help():
     assert "--uninstall" in result.stdout
 
 
+def test_install_script_pipe_stdin_help():
+    with open(INSTALL_SH, "rb") as f:
+        result = subprocess.run(
+            ["bash", "-s", "--", "--help"],
+            stdin=f,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    assert "Soulwave Installer" in result.stdout
+    assert "--version" in result.stdout
+
+
 def test_install_script_missing_local_file():
     result = subprocess.run(
         [str(INSTALL_SH), "--file", "nonexistent-package.whl"],
