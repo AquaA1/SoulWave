@@ -131,10 +131,15 @@ def test_lyrics_client_plain_fallback(mock_search):
 
 @patch("syncedlyrics.search")
 def test_lyrics_client_async_outdated_track_discarded(mock_search):
+    import threading
+
+    t1_started = threading.Event()
+
     # Simulate slow search for track 1, then fast search for track 2
     def slow_search(query, **kwargs):
         if "Track 1" in query:
-            time.sleep(0.15)
+            t1_started.set()
+            time.sleep(0.1)
             return "[00:10.00] Track 1 lyrics"
         return "[00:05.00] Track 2 lyrics"
 
@@ -154,12 +159,17 @@ def test_lyrics_client_async_outdated_track_discarded(mock_search):
 
         # Launch track 1
         client.fetch_lyrics_async("Artist", "Track 1", callback=cb1)
+        # Wait until track 1 search thread has definitely begun
+        t1_started.wait(timeout=2.0)
         # Immediately change track to track 2
-        time.sleep(0.02)
         client.fetch_lyrics_async("Artist", "Track 2", callback=cb2)
 
-        # Wait for both workers to finish
-        time.sleep(0.3)
+        # Wait for workers to finish (poll up to 3.0 seconds)
+        for _ in range(60):
+            if len(results) > 0:
+                time.sleep(0.15)  # give a moment for any superseded callback to erroneously fire
+                break
+            time.sleep(0.05)
 
         # cb1 must have been discarded because track 1 was superseded!
         assert len(results) == 1
