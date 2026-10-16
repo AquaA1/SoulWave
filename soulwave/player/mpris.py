@@ -505,6 +505,14 @@ class MPRISPlayer(BasePlayer):
                 ShuffleStatus.ON if bool(props["Shuffle"]) else ShuffleStatus.OFF
             )
 
+        # Parse Position if present in props
+        pos_sec_reported: Optional[float] = None
+        if "Position" in props:
+            try:
+                pos_sec_reported = max(0.0, float(props["Position"]) / 1_000_000.0)
+            except (ValueError, TypeError):
+                pos_sec_reported = None
+
         is_new_track = False
         if "Metadata" in props:
             meta = props["Metadata"]
@@ -553,12 +561,13 @@ class MPRISPlayer(BasePlayer):
             if is_new_track:
                 # Track identity changed! Advance epoch and reset interpolator cleanly
                 self._track_epoch += 1
+                init_pos = pos_sec_reported if pos_sec_reported is not None else 0.0
                 self._interpolator.reset_for_new_track(
-                    initial_position=0.0,
+                    initial_position=init_pos,
                     duration=duration_sec,
                     epoch=self._track_epoch,
                 )
-                self._last_state.position_seconds = 0.0
+                self._last_state.position_seconds = init_pos
 
             art_url_val = str(meta.get("mpris:artUrl", "")) or None
 
@@ -574,26 +583,24 @@ class MPRISPlayer(BasePlayer):
                 self._last_state.can_seek = True
 
             # Keep interpolator in sync
+            sync_pos = pos_sec_reported if pos_sec_reported is not None else self._last_state.position_seconds
             self._interpolator.sync(
-                self._last_state.position_seconds,
+                sync_pos,
                 self._last_state.status,
                 duration_sec,
                 is_authoritative=is_new_track,
                 epoch=self._track_epoch,
             )
+            self._last_state.position_seconds = sync_pos
 
-        if "Position" in props:
-            try:
-                pos_sec = max(0.0, float(props["Position"]) / 1_000_000.0)
-                self._interpolator.sync(
-                    pos_sec,
-                    self._last_state.status,
-                    self._last_state.metadata.duration_seconds,
-                    epoch=self._track_epoch,
-                )
-                self._last_state.position_seconds = pos_sec
-            except (ValueError, TypeError):
-                pass
+        elif pos_sec_reported is not None:
+            self._interpolator.sync(
+                pos_sec_reported,
+                self._last_state.status,
+                self._last_state.metadata.duration_seconds,
+                epoch=self._track_epoch,
+            )
+            self._last_state.position_seconds = pos_sec_reported
 
     # --- State and Control Methods ---
 
@@ -604,17 +611,25 @@ class MPRISPlayer(BasePlayer):
                 # Fetch all properties
                 try:
                     all_props = self._props_iface.GetAll("org.mpris.MediaPlayer2.Player")
+                    props_dict = dict(all_props)
+                    # Many MPRIS players omit Position from GetAll or return 0 to prevent bus traffic; ensure Position is queried
+                    if "Position" not in props_dict or props_dict.get("Position") == 0:
+                        try:
+                            pos_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
+                            if pos_val is not None:
+                                props_dict["Position"] = pos_val
+                        except Exception:
+                            pass
                     with self._lock:
-                        self._apply_dbus_properties(dict(all_props))
+                        self._apply_dbus_properties(props_dict)
                 except dbus.DBusException:
                     # Fallback to individual property gets
                     with self._lock:
                         status_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
                         self._last_state.status = self._parse_status(str(status_val))
                         meta_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Metadata")
-                        self._apply_dbus_properties({"Metadata": meta_val})
                         pos_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
-                        self._apply_dbus_properties({"Position": pos_val})
+                        self._apply_dbus_properties({"Metadata": meta_val, "Position": pos_val})
 
                 # Refresh position interpolation
                 with self._lock:

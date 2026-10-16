@@ -206,12 +206,12 @@ class LyricsPanelView(Widget):
                 else:
                     active_idx = len(self.lines) - 1
 
-            if active_idx < 0:
-                active_idx = 0
+            is_intro = (active_idx < 0)
+            center_idx = 0 if is_intro else active_idx
 
             # Center active line in available space
             half = (max_visible_lines - 2) // 2
-            start_idx = max(0, active_idx - half)
+            start_idx = max(0, center_idx - half)
             end_idx = min(len(self.lines), start_idx + max_visible_lines - 2)
 
             if end_idx - start_idx < max_visible_lines - 2:
@@ -228,9 +228,9 @@ class LyricsPanelView(Widget):
                 line = self.lines[idx]
                 line_str = line.text if line.text else " "
 
-                if idx == active_idx:
+                if not is_intro and idx == active_idx:
                     t.append(f" ▸ {line_str}\n", style=acc_style)
-                elif idx < active_idx:
+                elif not is_intro and idx < active_idx:
                     t.append(f"   {line_str}\n", style=past_style)
                 else:
                     t.append(f"   {line_str}\n", style=future_style)

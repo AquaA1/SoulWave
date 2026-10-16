@@ -140,10 +140,24 @@ class PositionInterpolator:
                         self._is_uncertain = True
                     return
 
-                # Firefox/Chromium often update D-Bus Position only once every ~1.5-2.0s.
-                # If the incoming position is within [0.0, 2.5s] behind our currently interpolated position,
-                # do NOT snap backwards and rubberband. Let smooth interpolation continue until player moves forward.
+                # Calculate lag/lead between local estimation and player report
                 jitter_behind = estimated - pos
+
+                # Detect if the player seeked backward in its own UI (pos jumped backward)
+                is_backward_seek = (pos < self._last_accepted_pos - 0.5 and self._last_accepted_pos > 0.5)
+                if is_backward_seek:
+                    # User seeked backward directly in media player: snap to new position immediately!
+                    self._confirmed_position = pos
+                    self._last_sync_time = now
+                    self._last_accepted_pos = pos
+                    self._last_accepted_time = now
+                    self._stale_zero_count = 0
+                    self._is_uncertain = False
+                    return
+
+                # Firefox/Chromium often update D-Bus Position only once every ~1.5-2.0s.
+                # If incoming position is within [0.0, 2.5s] behind our currently interpolated position,
+                # do NOT snap backwards and rubberband. Let smooth interpolation continue.
                 if 0.0 <= jitter_behind < 2.5:
                     if pos > 0.2:
                         self._stale_zero_count = 0

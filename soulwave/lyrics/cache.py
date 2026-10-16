@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple
 class LyricsCache:
     """Stores fetched lyrics, miss/failure backoffs, and per-song timing offset preferences."""
 
-    NEGATIVE_CACHE_TTL: float = 300.0  # 5 minutes before retrying a failed lookup
+    NEGATIVE_CACHE_TTL: float = 60.0  # 1 minute before retrying a failed lookup
     MAX_RETRIES: int = 3  # Maximum failed attempts within retry window
 
     def __init__(self, cache_dir: Path | None = None) -> None:

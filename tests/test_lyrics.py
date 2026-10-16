@@ -237,3 +237,59 @@ Line 5: Outro"""
     panel.set_lyrics(None, "")
     render_empty = panel.render().plain
     assert "No lyrics found" in render_empty
+
+
+def test_youtube_metadata_query_cleaning():
+    """Verify YouTube channel names, annotations, and title formatting are cleaned smartly."""
+    client = LyricsClient()
+
+    # 1. YouTube video title containing "Artist - Title" with channel name as artist
+    q1 = client._build_search_queries("The Vibe Guide", "LOVIXX, STOSLIV - Don't tell your dreams (Lyrics)")
+    # Must prioritize the song title directly rather than prepending the channel name
+    assert "LOVIXX, STOSLIV - Don't tell your dreams" in q1
+    assert q1[0] == "LOVIXX, STOSLIV - Don't tell your dreams"
+
+    # 2. VEVO channel cleaning
+    q2 = client._build_search_queries("TheKidLaroiVEVO", "STAY (Official Video)")
+    assert any("TheKidLaroi - STAY" in q for q in q2)
+
+    # 3. Topic channel cleaning
+    q3 = client._build_search_queries("Shashwat Sachdev - Topic", "Naal Nachna")
+    assert any("Shashwat Sachdev - Naal Nachna" in q for q in q3)
+
+
+@patch("syncedlyrics.search")
+def test_fast_providers_priority(mock_search):
+    """Verify lyrics queries prioritize Lrclib as first provider."""
+    mock_search.return_value = RAW_LRC
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache = LyricsCache(Path(tmpdir))
+        client = LyricsClient(cache)
+        res = client.fetch_lyrics_sync("ArtistA", "TrackA")
+
+        assert res is not None
+        assert mock_search.called
+        kwargs = mock_search.call_args[1]
+        assert kwargs.get("providers") == ["Lrclib", "NetEase", "Megalobiz", "Musixmatch", "Genius"]
+
+
+def test_synced_lyrics_intro_rendering():
+    """Verify before the first lyric line timestamp, line 0 is not highlighted as active."""
+    from soulwave.ui.widgets.lyrics_panel import LyricsPanelView
+
+    panel = LyricsPanelView()
+    panel.set_lyrics(RAW_LRC, None, duration=180.0)
+
+    # First timestamp in RAW_LRC is at 00:05.20
+    # At t=2.0s (during intro), line 0 must NOT be marked with '▸'
+    panel.update_position(2.0, (56, 189, 248), duration=180.0)
+    rendered_intro = panel.render().plain
+    assert "Look at the stars" in rendered_intro
+    assert "▸ Look at the stars" not in rendered_intro
+
+    # At t=6.0s (after first timestamp), line 0 MUST be active with '▸'
+    panel.update_position(6.0, (56, 189, 248), duration=180.0)
+    rendered_active = panel.render().plain
+    assert "▸ Look at the stars" in rendered_active
+

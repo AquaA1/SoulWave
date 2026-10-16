@@ -14,15 +14,18 @@ RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 DIST_DIR = REPO_ROOT / "dist"
 VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
 
-
 import sys
+import tomllib
+
+PYPROJECT_TOML = REPO_ROOT / "pyproject.toml"
+PROJECT_VERSION = tomllib.loads(PYPROJECT_TOML.read_text(encoding="utf-8"))["project"]["version"]
 
 
-def get_built_rpm(version: str = "0.1.1"):
+def get_built_rpm(version: str = PROJECT_VERSION):
     """Find built RPM in dist directory matching version."""
     rpms = [r for r in DIST_DIR.glob("*.rpm") if version in r.name]
     if not rpms:
-        rpms = list(DIST_DIR.glob("*.rpm"))
+        rpms = sorted(DIST_DIR.glob("*.rpm"), key=lambda r: r.name, reverse=True)
     # Prefer x86_64, then noarch
     x86_64_rpms = [r for r in rpms if "x86_64" in r.name]
     if x86_64_rpms:
@@ -30,7 +33,7 @@ def get_built_rpm(version: str = "0.1.1"):
     return rpms[0] if rpms else None
 
 
-def get_built_wheel(version: str = "0.1.1"):
+def get_built_wheel(version: str = PROJECT_VERSION):
     """Find or build wheel in dist directory matching version."""
     wheels = [w for w in DIST_DIR.glob("*.whl") if version in w.name]
     if wheels:
@@ -268,7 +271,7 @@ def test_rpm_spec_syntax_and_metadata():
     )
     assert result.returncode == 0, f"rpmspec failed: {result.stderr}"
     pkg_name = result.stdout.strip()
-    assert "soulwave-0.1.1-1" in pkg_name
+    assert f"soulwave-{PROJECT_VERSION}-1" in pkg_name
 
     # Verify requires
     req_res = subprocess.run(
@@ -354,7 +357,7 @@ def test_rpm_spec_dynamic_version_override():
     
     # 1. Default version
     res_default = subprocess.run(["rpmspec", "-q", str(RPM_SPEC)], capture_output=True, text=True, check=True)
-    assert "soulwave-0.1.1-1" in res_default.stdout
+    assert f"soulwave-{PROJECT_VERSION}-1" in res_default.stdout
 
     # 2. Dynamic version override
     res_v2 = subprocess.run(
@@ -459,7 +462,7 @@ def test_release_workflow_version_extraction_snippet():
         text=True,
         check=True,
     )
-    assert res.stdout.strip() == "0.1.1"
+    assert res.stdout.strip() == PROJECT_VERSION
 
 
 def test_built_wheel_contains_stylesheet_package_data():
@@ -478,7 +481,9 @@ def test_built_wheel_contains_stylesheet_package_data():
 def test_built_sdist_contains_stylesheet_package_data():
     """Regression test: Built sdist MUST contain soulwave/ui/styles.tcss."""
     import tarfile
-    sdists = [s for s in DIST_DIR.glob("*.tar.gz") if "0.1.1" in s.name]
+    sdists = [s for s in DIST_DIR.glob("*.tar.gz") if PROJECT_VERSION in s.name]
+    if not sdists:
+        sdists = sorted(DIST_DIR.glob("*.tar.gz"), key=lambda s: s.name, reverse=True)
     if not sdists:
         pytest.skip("Source distribution not found in dist/")
     with tarfile.open(sdists[0], "r:gz") as tar:
