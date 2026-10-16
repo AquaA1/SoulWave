@@ -15,16 +15,79 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    name: Validate Release Ref and Version
+    runs-on: ubuntu-latest
+    outputs:
+      release-tag: ${{ steps.resolve.outputs.release-tag }}
+      release-version: ${{ steps.resolve.outputs.release-version }}
+      checkout-ref: ${{ steps.resolve.outputs.checkout-ref }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and validate release ref
+        id: resolve
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -z "${INPUT_TAG}" ]; then
+              echo "ERROR: Manual release requires an explicit 'tag' input." >&2
+              exit 1
+            fi
+            TARGET_TAG="${INPUT_TAG}"
+          else
+            TARGET_TAG="${REF_NAME}"
+          fi
+
+          # 1. Validate tag format (e.g. v0.1.0)
+          if [[ ! "${TARGET_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            echo "ERROR: Invalid tag format '${TARGET_TAG}'. Must start with 'v' followed by semantic version (e.g. v0.1.0)." >&2
+            exit 1
+          fi
+
+          # 2. Verify that the requested tag exists and points to a commit in this repository
+          if ! git rev-parse -q --verify "refs/tags/${TARGET_TAG}" >/dev/null; then
+            echo "ERROR: Release tag '${TARGET_TAG}' does not exist as a git tag in this repository." >&2
+            echo "Please ensure the tag is created and pushed before running release dispatch." >&2
+            exit 1
+          fi
+
+          TARGET_VERSION="${TARGET_TAG#v}"
+
+          # 3. Check out the target tag and verify version consistency with pyproject.toml
+          git checkout "${TARGET_TAG}"
+          PYPROJECT_VERSION=$(python3 -c "import re; m = re.search(r'^version\s*=\s*[\"\\\']([^\"\\\']+)[\"\\\']', open('pyproject.toml', 'r', encoding='utf-8').read(), re.M); print(m.group(1))")
+
+          if [ "${TARGET_VERSION}" != "${PYPROJECT_VERSION}" ]; then
+            echo "ERROR: Version mismatch! Release tag '${TARGET_TAG}' implies version '${TARGET_VERSION}', but pyproject.toml specifies '${PYPROJECT_VERSION}'." >&2
+            exit 1
+          fi
+
+          echo "==> Successfully validated release tag '${TARGET_TAG}' (version '${TARGET_VERSION}')."
+          echo "release-tag=${TARGET_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release-version=${TARGET_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "checkout-ref=${TARGET_TAG}" >> "$GITHUB_OUTPUT"
+
   test:
     name: Run Unit Tests
+    needs: validate
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
-      - name: Check out repository
+      - name: Check out repository at validated ref
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.checkout-ref }}
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -43,12 +106,14 @@ jobs:
 
   build-python:
     name: Build Wheel and Source Distribution
-    needs: test
+    needs: [validate, test]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out repository at validated ref
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.checkout-ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -63,6 +128,22 @@ jobs:
         run: |
           python -m build --sdist --wheel --outdir dist/
 
+      - name: Verify build artifacts match release version
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.release-version }}
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          if [ ! -f "dist/soulwave-${EXPECTED_VERSION}-py3-none-any.whl" ]; then
+            echo "ERROR: Expected wheel dist/soulwave-${EXPECTED_VERSION}-py3-none-any.whl not found!" >&2
+            exit 1
+          fi
+          if [ ! -f "dist/soulwave-${EXPECTED_VERSION}.tar.gz" ]; then
+            echo "ERROR: Expected sdist dist/soulwave-${EXPECTED_VERSION}.tar.gz not found!" >&2
+            exit 1
+          fi
+          echo "Verified Python distributions match expected version ${EXPECTED_VERSION}."
+
       - name: Upload Python distribution artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -72,12 +153,14 @@ jobs:
 
   build-rpm:
     name: Build Standalone Fedora RPM
-    needs: [test, build-python]
+    needs: [validate, test, build-python]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out repository at validated ref
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.checkout-ref }}
 
       - name: Download Python distribution artifacts
         uses: actions/download-artifact@v4
@@ -86,16 +169,18 @@ jobs:
           path: dist
 
       - name: Build Standalone RPM inside Fedora container
+        env:
+          TARGET_VERSION: ${{ needs.validate.outputs.release-version }}
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
+            -e TARGET_VERSION="${TARGET_VERSION}" \
             fedora:41 \
             bash -c "
               set -euo pipefail
               dnf install -y rpm-build python3-devel python3-pip python3-wheel python3-setuptools
-              VERSION=\$(grep -E '^version = ' pyproject.toml | head -n 1 | cut -d '\"' -f 2)
-              ./packaging/rpm/build_rpm.sh \"\${VERSION}\" 1
+              ./packaging/rpm/build_rpm.sh \"\${TARGET_VERSION}\" 1
             "
 
       - name: Upload RPM distribution artifacts
@@ -107,21 +192,14 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [test, build-python, build-rpm]
+    needs: [validate, test, build-python, build-rpm]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out repository at validated ref
         uses: actions/checkout@v4
-
-      - name: Validate Release Tag
-        run: |
-          TARGET_TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "${TARGET_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-            echo "ERROR: Invalid tag format '${TARGET_TAG}'. Must start with 'v' followed by semantic version (e.g. v0.1.0)." >&2
-            exit 1
-          fi
-          echo "RELEASE_TAG=${TARGET_TAG}" >> "$GITHUB_ENV"
+        with:
+          ref: ${{ needs.validate.outputs.checkout-ref }}
 
       - name: Download Python distributions
         uses: actions/download-artifact@v4
@@ -135,22 +213,26 @@ jobs:
           name: rpm-dist
           path: release-artifacts
 
-      - name: Verify Required Artifacts Exist
+      - name: Verify Required Release Artifacts
         working-directory: release-artifacts
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.release-version }}
         run: |
+          set -euo pipefail
           ls -la
-          if ! compgen -G "*.whl" > /dev/null; then
-            echo "ERROR: Missing required Python wheel artifact (*.whl)!" >&2
+          if ! compgen -G "soulwave-${EXPECTED_VERSION}-py3-none-any.whl" > /dev/null; then
+            echo "ERROR: Missing expected wheel soulwave-${EXPECTED_VERSION}-py3-none-any.whl!" >&2
             exit 1
           fi
-          if ! compgen -G "*.rpm" > /dev/null; then
-            echo "ERROR: Missing required Fedora RPM artifact (*.rpm)!" >&2
+          if ! compgen -G "soulwave-${EXPECTED_VERSION}*.rpm" > /dev/null; then
+            echo "ERROR: Missing expected Fedora RPM for version ${EXPECTED_VERSION}!" >&2
             exit 1
           fi
-          if ! compgen -G "*.tar.gz" > /dev/null; then
-            echo "ERROR: Missing required source tarball (*.tar.gz)!" >&2
+          if ! compgen -G "soulwave-${EXPECTED_VERSION}.tar.gz" > /dev/null; then
+            echo "ERROR: Missing expected source tarball for version ${EXPECTED_VERSION}!" >&2
             exit 1
           fi
+          echo "Verified all required distribution artifacts exist for version ${EXPECTED_VERSION}."
 
       - name: Generate SHA-256 Checksums
         working-directory: release-artifacts
@@ -162,7 +244,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ needs.validate.outputs.release-tag }}
           files: release-artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true

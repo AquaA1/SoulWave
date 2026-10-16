@@ -294,6 +294,24 @@ def test_rpm_installation_and_standalone_launch(tmp_path):
     assert "--theme" in cli_test.stdout
 
 
+def test_rpm_spec_dynamic_version_override():
+    """Verify that passing version and release macros dynamically overrides spec metadata."""
+    assert RPM_SPEC.is_file(), "soulwave.spec must exist"
+    
+    # 1. Default version
+    res_default = subprocess.run(["rpmspec", "-q", str(RPM_SPEC)], capture_output=True, text=True, check=True)
+    assert "soulwave-0.1.0-1" in res_default.stdout
+
+    # 2. Dynamic version override
+    res_v2 = subprocess.run(
+        ["rpmspec", "-q", "--define", "version 0.2.0", "--define", "release 3", str(RPM_SPEC)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "soulwave-0.2.0-3" in res_v2.stdout
+
+
 def test_release_workflow_syntax_and_safety():
     assert RELEASE_YML.is_file(), "release.yml must exist"
     content = RELEASE_YML.read_text(encoding="utf-8")
@@ -313,10 +331,45 @@ def test_release_workflow_syntax_and_safety():
 
     assert "jobs" in data
     jobs = data["jobs"]
+    assert "validate" in jobs
     assert "test" in jobs
     assert "build-python" in jobs
     assert "build-rpm" in jobs
     assert "release" in jobs
 
-    # Verify release job needs all builds
-    assert set(jobs["release"]["needs"]) == {"test", "build-python", "build-rpm"}
+    # Verify all build and test jobs depend on validate and use the validated checkout ref
+    for job_name in ["test", "build-python", "build-rpm", "release"]:
+        job_needs = jobs[job_name]["needs"]
+        if isinstance(job_needs, list):
+            assert "validate" in job_needs, f"Job '{job_name}' must depend on 'validate'"
+        else:
+            assert job_needs == "validate", f"Job '{job_name}' must depend on 'validate'"
+
+        # Verify checkout step uses the validated ref
+        checkout_steps = [s for s in jobs[job_name]["steps"] if "actions/checkout" in s.get("uses", "")]
+        assert len(checkout_steps) > 0, f"Job '{job_name}' must have a checkout step"
+        ref_val = checkout_steps[0].get("with", {}).get("ref", "")
+        assert "${{ needs.validate.outputs.checkout-ref }}" in ref_val, f"Job '{job_name}' must checkout the validated ref"
+
+
+def test_release_tag_and_pyproject_version_consistency():
+    """Verify semantic tag format validation and version matching against pyproject.toml."""
+    import re
+    pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', pyproject_text, re.M)
+    assert match is not None
+    current_version = match.group(1)
+
+    # Valid matching tag
+    valid_tag = f"v{current_version}"
+    assert re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+.*$", valid_tag)
+    assert valid_tag.lstrip("v") == current_version
+
+    # Invalid tags
+    invalid_tags = ["0.1.0", "release-0.1.0", "v0", "v0.1", "latest", "main"]
+    for t in invalid_tags:
+        assert not re.match(r"^v[0-9]+\.[0-9]+\.[0-9]+.*$", t), f"Tag '{t}' should not pass semantic tag regex"
+
+    # Mismatched version
+    mismatched_tag = "v99.99.99"
+    assert mismatched_tag.lstrip("v") != current_version

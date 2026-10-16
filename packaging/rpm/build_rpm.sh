@@ -78,6 +78,20 @@ rpmbuild -bb \
     --define "release ${RELEASE}" \
     "${TMP_BUILD_DIR}/SPECS/soulwave.spec"
 
+# Verify generated RPM metadata
+echo "==> Verifying generated RPM package metadata..."
+BUILT_RPM_FILE="$(find "${TMP_BUILD_DIR}/RPMS" -name "*.rpm" | head -n 1)"
+if [ -z "${BUILT_RPM_FILE}" ]; then
+    echo "ERROR: No RPM was produced by rpmbuild." >&2
+    exit 1
+fi
+ACTUAL_RPM_VERSION="$(rpm -qp --queryformat '%{VERSION}' "${BUILT_RPM_FILE}")"
+if [ "${ACTUAL_RPM_VERSION}" != "${VERSION}" ]; then
+    echo "ERROR: Version mismatch in generated RPM! Expected version '${VERSION}', but RPM metadata has '${ACTUAL_RPM_VERSION}'." >&2
+    exit 1
+fi
+echo "==> Verified RPM version matches expected: ${ACTUAL_RPM_VERSION}"
+
 # Collect built RPMs
 echo "==> Collecting built packages..."
 find "${TMP_BUILD_DIR}/RPMS" -name "*.rpm" -exec cp -v {} "${DIST_DIR}/" \;

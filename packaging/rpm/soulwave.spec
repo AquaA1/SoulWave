@@ -1,6 +1,7 @@
+%{!?version: %global version 0.1.0}
 Name:           soulwave
-Version:        0.1.0
-Release:        1%{?dist}
+Version:        %{version}
+Release:        %{?release}%{!?release:1}%{?dist}
 Summary:        Retro-futuristic terminal music controller with grooving soul mascot
 
 License:        MIT
