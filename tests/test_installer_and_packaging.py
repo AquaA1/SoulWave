@@ -1,6 +1,7 @@
-"""Tests for installer script (install.sh), RPM spec, and release workflow."""
+"""Comprehensive tests for installer script (install.sh), RPM packaging, and release workflow."""
 import hashlib
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import pytest
@@ -10,7 +11,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
 RPM_SPEC = REPO_ROOT / "packaging" / "rpm" / "soulwave.spec"
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
-WHEEL_FILE = REPO_ROOT / "dist" / "soulwave-0.1.0-py3-none-any.whl"
+DIST_DIR = REPO_ROOT / "dist"
+VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
+
+
+def get_built_rpm():
+    """Find built RPM in dist directory."""
+    rpms = list(DIST_DIR.glob("*.rpm"))
+    # Prefer x86_64, then noarch
+    x86_64_rpms = [r for r in rpms if "x86_64" in r.name]
+    if x86_64_rpms:
+        return x86_64_rpms[0]
+    return rpms[0] if rpms else None
+
+
+def get_built_wheel():
+    """Find built wheel in dist directory."""
+    wheels = list(DIST_DIR.glob("*.whl"))
+    return wheels[0] if wheels else None
 
 
 def test_install_script_exists_and_executable():
@@ -42,7 +60,7 @@ def test_install_script_missing_local_file():
     assert "Specified local file not found" in result.stderr or "Specified local file not found" in result.stdout
 
 
-def test_checksum_verification_logic(tmp_path):
+def test_checksum_verification_valid(tmp_path):
     test_file = tmp_path / "test-pkg.whl"
     test_content = b"fake-package-data-12345"
     test_file.write_bytes(test_content)
@@ -51,38 +69,89 @@ def test_checksum_verification_logic(tmp_path):
     checksums_file = tmp_path / "checksums.txt"
     checksums_file.write_text(f"{correct_hash}  test-pkg.whl\n")
 
-    # Source install.sh and run verify_checksum function
     bash_verify = f"""
     source "{INSTALL_SH}"
     verify_checksum "{test_file}" "{checksums_file}"
     """
-    res_ok = subprocess.run(
-        ["bash", "-c", bash_verify],
-        capture_output=True,
-        text=True,
-    )
-    assert res_ok.returncode == 0
-    assert "SHA-256 verified" in res_ok.stdout or "SHA-256 verified" in res_ok.stderr
+    res = subprocess.run(["bash", "-c", bash_verify], capture_output=True, text=True)
+    assert res.returncode == 0
+    assert "SHA-256 verified" in res.stdout or "SHA-256 verified" in res.stderr
 
-    # Test tampering
-    tampered_checksums = tmp_path / "tampered_checksums.txt"
+
+def test_checksum_verification_tampered_fails_closed(tmp_path):
+    test_file = tmp_path / "test-pkg.whl"
+    test_file.write_bytes(b"tampered-content")
+
+    tampered_checksums = tmp_path / "checksums.txt"
     tampered_checksums.write_text("0000000000000000000000000000000000000000000000000000000000000000  test-pkg.whl\n")
 
-    bash_tampered = f"""
+    bash_cmd = f"""
     source "{INSTALL_SH}"
     verify_checksum "{test_file}" "{tampered_checksums}"
     """
-    res_bad = subprocess.run(
-        ["bash", "-c", bash_tampered],
-        capture_output=True,
-        text=True,
-    )
-    assert res_bad.returncode != 0
-    assert "Checksum verification failed" in res_bad.stderr or "Checksum verification failed" in res_bad.stdout
+    res = subprocess.run(["bash", "-c", bash_cmd], capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "Checksum verification failed" in res.stderr or "Checksum verification failed" in res.stdout
+
+
+def test_checksum_verification_absent_checksums_fails_closed(tmp_path):
+    test_file = tmp_path / "test-pkg.whl"
+    test_file.write_bytes(b"package-data")
+    non_existent_sums = tmp_path / "non_existent_checksums.txt"
+
+    bash_cmd = f"""
+    source "{INSTALL_SH}"
+    verify_checksum "{test_file}" "{non_existent_sums}"
+    """
+    res = subprocess.run(["bash", "-c", bash_cmd], capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "is missing" in res.stderr or "is missing" in res.stdout
+
+
+def test_checksum_verification_missing_asset_entry_fails_closed(tmp_path):
+    test_file = tmp_path / "test-pkg.whl"
+    test_file.write_bytes(b"package-data")
+
+    checksums_file = tmp_path / "checksums.txt"
+    checksums_file.write_text("a" * 64 + "  other-package.whl\n")
+
+    bash_cmd = f"""
+    source "{INSTALL_SH}"
+    verify_checksum "{test_file}" "{checksums_file}"
+    """
+    res = subprocess.run(["bash", "-c", bash_cmd], capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "No checksum entry found" in res.stderr or "No checksum entry found" in res.stdout
+
+
+def test_checksum_verification_invalid_format_fails_closed(tmp_path):
+    test_file = tmp_path / "test-pkg.whl"
+    test_file.write_bytes(b"package-data")
+
+    checksums_file = tmp_path / "checksums.txt"
+    checksums_file.write_text("not-a-valid-sha256-hash  test-pkg.whl\n")
+
+    bash_cmd = f"""
+    source "{INSTALL_SH}"
+    verify_checksum "{test_file}" "{checksums_file}"
+    """
+    res = subprocess.run(["bash", "-c", bash_cmd], capture_output=True, text=True)
+    assert res.returncode != 0
+    assert "Invalid SHA-256 hash format" in res.stderr or "Invalid SHA-256 hash format" in res.stdout
+
+
+def test_curl_cmd_http_error_fails_immediately():
+    bash_cmd = f"""
+    source "{INSTALL_SH}"
+    curl_cmd -sSL -o /dev/null "http://127.0.0.1:9" 2>&1
+    """
+    res = subprocess.run(["bash", "-c", bash_cmd], capture_output=True, text=True)
+    assert res.returncode != 0, "curl_cmd must fail immediately on connection/HTTP errors"
 
 
 def test_user_mode_installation_and_uninstallation(tmp_path):
-    assert WHEEL_FILE.is_file(), f"Wheel file {WHEEL_FILE} must exist before running test"
+    wheel_file = get_built_wheel()
+    assert wheel_file is not None and wheel_file.is_file(), "Built wheel file must exist"
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
@@ -92,7 +161,7 @@ def test_user_mode_installation_and_uninstallation(tmp_path):
 
     # 1. Install using --user and --no-deps
     res_install = subprocess.run(
-        [str(INSTALL_SH), "--file", str(WHEEL_FILE), "--user", "--no-deps"],
+        [str(INSTALL_SH), "--file", str(wheel_file), "--user", "--no-deps"],
         capture_output=True,
         text=True,
         env=env,
@@ -124,6 +193,38 @@ def test_user_mode_installation_and_uninstallation(tmp_path):
     assert not install_dir.exists(), "Install directory should be removed after uninstall"
 
 
+def test_wheel_installation_with_real_dependencies(tmp_path):
+    """Test regular isolated virtualenv installation using local wheels without --no-deps."""
+    wheel_file = get_built_wheel()
+    assert wheel_file is not None and wheel_file.is_file(), "Built wheel file must exist"
+
+    if not VENDOR_WHEELS_DIR.is_dir() or not list(VENDOR_WHEELS_DIR.glob("*.whl")):
+        pytest.skip("Vendor wheels directory not populated for offline test")
+
+    test_venv = tmp_path / "test_venv"
+    # Create isolated venv
+    subprocess.run(["python3", "-m", "venv", str(test_venv)], check=True)
+
+    # Install soulwave wheel using vendor_wheels as find-links
+    pip_install_cmd = [
+        str(test_venv / "bin" / "python3"),
+        "-m", "pip", "install",
+        "--no-index",
+        f"--find-links={VENDOR_WHEELS_DIR}",
+        f"--find-links={DIST_DIR}",
+        str(wheel_file),
+    ]
+    res = subprocess.run(pip_install_cmd, capture_output=True, text=True)
+    assert res.returncode == 0, f"pip install with real dependencies failed: {res.stderr}"
+
+    # Verify startup test in the venv
+    run_cmd = [str(test_venv / "bin" / "python3"), "-m", "soulwave.cli", "--help"]
+    run_res = subprocess.run(run_cmd, capture_output=True, text=True)
+    assert run_res.returncode == 0
+    assert "Soulwave" in run_res.stdout
+    assert "--demo" in run_res.stdout
+
+
 def test_rpm_spec_syntax_and_metadata():
     assert RPM_SPEC.is_file(), "soulwave.spec must exist"
     result = subprocess.run(
@@ -133,7 +234,7 @@ def test_rpm_spec_syntax_and_metadata():
     )
     assert result.returncode == 0, f"rpmspec failed: {result.stderr}"
     pkg_name = result.stdout.strip()
-    assert pkg_name.startswith("soulwave-0.1.0-1")
+    assert "soulwave-0.1.0-1" in pkg_name
 
     # Verify requires
     req_res = subprocess.run(
@@ -148,7 +249,52 @@ def test_rpm_spec_syntax_and_metadata():
     assert any("python3-dbus" in r for r in requires)
 
 
-def test_release_workflow_syntax():
+def test_rpm_installation_and_standalone_launch(tmp_path):
+    """Verify that the built RPM installs a self-contained runtime capable of launching soulwave."""
+    built_rpm = get_built_rpm()
+    assert built_rpm is not None and built_rpm.is_file(), f"Built RPM must exist in {DIST_DIR}"
+
+    clean_root = tmp_path / "clean_root"
+    clean_root.mkdir()
+
+    # Extract RPM payload using rpm2cpio and cpio quietly
+    with open(os.devnull, "wb") as devnull:
+        p_rpm2cpio = subprocess.Popen(["rpm2cpio", str(built_rpm)], stdout=subprocess.PIPE, stderr=devnull)
+        subprocess.run(["cpio", "-idm", "--quiet"], cwd=str(clean_root), stdin=p_rpm2cpio.stdout, stdout=devnull, stderr=devnull, check=True)
+        p_rpm2cpio.wait()
+
+    # Verify directory layout
+    vendor_dir = clean_root / "usr" / "lib" / "soulwave" / "vendor"
+    bin_launcher = clean_root / "usr" / "bin" / "soulwave"
+
+    assert vendor_dir.is_dir(), "Vendor runtime directory /usr/lib/soulwave/vendor must exist"
+    assert bin_launcher.is_file(), "Launcher script /usr/bin/soulwave must exist"
+    assert os.access(bin_launcher, os.X_OK), "Launcher script must be executable"
+
+    # Verify core dependencies exist inside vendor
+    assert (vendor_dir / "soulwave").is_dir(), "soulwave package must exist in vendor"
+    assert (vendor_dir / "textual").is_dir(), "textual package must exist in vendor"
+    assert (vendor_dir / "rich").is_dir(), "rich package must exist in vendor"
+    assert (vendor_dir / "syncedlyrics").is_dir(), "syncedlyrics package must exist in vendor"
+    assert (vendor_dir / "requests").is_dir(), "requests package must exist in vendor"
+
+    # Launch CLI startup test non-interactively using system python with ONLY the isolated vendor runtime
+    # -s: don't add current directory to sys.path
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(vendor_dir)
+    cli_test = subprocess.run(
+        ["/usr/bin/python3", "-s", "-m", "soulwave.cli", "--help"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert cli_test.returncode == 0, f"CLI startup test failed: {cli_test.stderr}"
+    assert "Soulwave" in cli_test.stdout
+    assert "--demo" in cli_test.stdout
+    assert "--theme" in cli_test.stdout
+
+
+def test_release_workflow_syntax_and_safety():
     assert RELEASE_YML.is_file(), "release.yml must exist"
     content = RELEASE_YML.read_text(encoding="utf-8")
     data = yaml.safe_load(content)
@@ -159,6 +305,12 @@ def test_release_workflow_syntax():
     assert "tags" in data["on"]["push"]
     assert "v*" in data["on"]["push"]["tags"]
 
+    # Verify workflow_dispatch requires tag input
+    assert "workflow_dispatch" in data["on"]
+    assert "inputs" in data["on"]["workflow_dispatch"]
+    assert "tag" in data["on"]["workflow_dispatch"]["inputs"]
+    assert data["on"]["workflow_dispatch"]["inputs"]["tag"]["required"] is True
+
     assert "jobs" in data
     jobs = data["jobs"]
     assert "test" in jobs
@@ -166,5 +318,5 @@ def test_release_workflow_syntax():
     assert "build-rpm" in jobs
     assert "release" in jobs
 
-    # Verify release job needs dependencies
+    # Verify release job needs all builds
     assert set(jobs["release"]["needs"]) == {"test", "build-python", "build-rpm"}

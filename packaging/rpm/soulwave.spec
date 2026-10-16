@@ -9,7 +9,6 @@ Source0:        %{name}-%{version}-py3-none-any.whl
 Source1:        README.md
 Source2:        LICENSE
 
-BuildArch:      noarch
 
 BuildRequires:  python3
 
@@ -37,13 +36,15 @@ rm -rf %{buildroot}
 mkdir -p %{buildroot}%{_prefix}/lib/%{name}/vendor
 mkdir -p %{buildroot}%{_bindir}
 
+# Install runtime dependencies into isolated vendor directory
+if [ ! -d %{_sourcedir}/vendor_wheels ] || ! compgen -G "%{_sourcedir}/vendor_wheels/*.whl" > /dev/null; then
+    echo "ERROR: Missing required vendor_wheels. Complete runtime dependencies must be provided." >&2
+    exit 1
+fi
+%{__python3} -m pip install --no-deps --target %{buildroot}%{_prefix}/lib/%{name}/vendor %{_sourcedir}/vendor_wheels/*.whl
+
 # Install soulwave wheel into isolated vendor directory
 %{__python3} -m pip install --no-deps --target %{buildroot}%{_prefix}/lib/%{name}/vendor %{SOURCE0}
-
-# If pre-bundled vendor wheels are included in sources, install them
-if [ -d %{_sourcedir}/vendor_wheels ] && compgen -G "%{_sourcedir}/vendor_wheels/*.whl" > /dev/null; then
-    %{__python3} -m pip install --no-deps --target %{buildroot}%{_prefix}/lib/%{name}/vendor %{_sourcedir}/vendor_wheels/*.whl
-fi
 
 # Install doc and license
 install -D -m 0644 %{SOURCE1} %{buildroot}%{_docdir}/%{name}/README.md
@@ -58,7 +59,15 @@ EOF
 chmod 0755 %{buildroot}%{_bindir}/%{name}
 
 %check
-PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -c "import soulwave; print(soulwave.__file__)"
+PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -c "
+import soulwave
+import soulwave.cli
+from textual.app import App
+import rich
+import syncedlyrics
+import requests
+print('Verified: All core Python runtime dependencies successfully imported from vendor environment.')
+"
 
 %files
 %{_docdir}/%{name}

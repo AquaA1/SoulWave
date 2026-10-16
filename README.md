@@ -169,16 +169,16 @@ sudo zypper install playerctl cava
 ### Upgrading & Uninstallation
 
 ```bash
-# Upgrade to the latest release anytime
+# Upgrade to the latest release anytime (recommended):
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 
-# Or on Fedora via DNF:
-sudo dnf upgrade soulwave
+# For manual RPM installs: download the latest release RPM and upgrade:
+sudo dnf upgrade ./soulwave-*.rpm
 
 # Clean uninstallation:
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --uninstall
 
-# Or on Fedora:
+# Or on Fedora (if installed via RPM):
 sudo dnf remove soulwave
 ```
 

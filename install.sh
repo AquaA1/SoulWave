@@ -225,6 +225,11 @@ check_prerequisites() {
     fi
 }
 
+# Secure curl wrapper ensuring HTTP errors fail immediately
+curl_cmd() {
+    curl --fail --show-error --location "$@"
+}
+
 # Download release assets from GitHub
 fetch_release_assets() {
     local tmp_dir="$1"
@@ -243,16 +248,15 @@ fetch_release_assets() {
 
     log_info "Querying GitHub release from ${api_url}..."
     local release_json="${tmp_dir}/release.json"
-    local http_code
-    http_code="$(curl -sSL -w "%{http_code}" -o "${release_json}" "${api_url}" 2>/dev/null || echo "000")"
 
-    if [ "${http_code}" != "200" ]; then
-        log_error "Failed to fetch release info (HTTP ${http_code})."
-        if [ "${http_code}" = "404" ]; then
-            echo "    No release tagged '${TARGET_VERSION:-latest}' was found on ${REPO}."
-            echo "    If you have a local build, install directly using:"
-            echo "      ./install.sh --file dist/soulwave-*.whl  (or dist/soulwave-*.rpm)"
+    if ! curl_cmd -sSL -o "${release_json}" "${api_url}" 2>/dev/null; then
+        log_error "Failed to fetch release metadata from ${api_url}."
+        if [ -n "${TARGET_VERSION}" ]; then
+            echo "    Release tag '${TARGET_VERSION}' was not found on ${REPO}."
+        else
+            echo "    No published releases found yet on ${REPO}."
         fi
+        echo "    If installing from a local file, use: ./install.sh --file <path>"
         exit 1
     fi
 
@@ -273,28 +277,45 @@ except Exception as e:
     sys.stderr.write(f'JSON parsing error: {e}\n')
     sys.exit(1)
 " || {
-        log_error "Could not parse GitHub release metadata."
+        log_error "Could not parse GitHub release metadata JSON."
         exit 1
     }
 
     TAG_NAME="$(head -n 1 "${parse_result}")"
     log_info "Found release: ${BOLD}${TAG_NAME}${RESET}"
 
-    # Download checksums.txt if available
+    # Download checksums.txt (fail-closed: MUST be present for release downloads)
     local checksums_url
     checksums_url="$(grep -E "^checksums\.txt[[:space:]]" "${parse_result}" | awk '{print $2}' || true)"
-    if [ -n "${checksums_url}" ]; then
-        log_info "Downloading checksums.txt..."
-        curl -sSL -o "${tmp_dir}/checksums.txt" "${checksums_url}"
+    if [ -z "${checksums_url}" ]; then
+        log_error "Release ${TAG_NAME} does not contain 'checksums.txt'. Refusing to install unverified release (fail-closed)."
+        exit 1
+    fi
+
+    log_info "Downloading checksums.txt..."
+    if ! curl_cmd -sSL -o "${tmp_dir}/checksums.txt" "${checksums_url}"; then
+        log_error "Failed to download checksums.txt from ${checksums_url}."
+        exit 1
     fi
 
     # Determine which asset to download
     CHOSEN_ASSET=""
     local chosen_url=""
+    local arch
+    arch="$(uname -m 2>/dev/null || echo "x86_64")"
 
     if [ "${IS_RPM_DISTRO}" -eq 1 ] && [ "${FORCE_WHEEL}" -eq 0 ] && [ "${INSTALL_MODE}" != "user" ]; then
-        CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
-        chosen_url="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+        # Check architecture-specific RPM first, then noarch, then any rpm
+        CHOSEN_ASSET="$(grep -E "\.${arch}\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
+        chosen_url="$(grep -E "\.${arch}\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+        if [ -z "${CHOSEN_ASSET}" ]; then
+            CHOSEN_ASSET="$(grep -E "\.noarch\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
+            chosen_url="$(grep -E "\.noarch\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+        fi
+        if [ -z "${CHOSEN_ASSET}" ]; then
+            CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
+            chosen_url="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+        fi
     fi
 
     # Fallback to wheel
@@ -309,11 +330,14 @@ except Exception as e:
     fi
 
     log_info "Downloading ${CHOSEN_ASSET}..."
-    curl -#SL -o "${tmp_dir}/${CHOSEN_ASSET}" "${chosen_url}"
+    if ! curl_cmd -#SL -o "${tmp_dir}/${CHOSEN_ASSET}" "${chosen_url}"; then
+        log_error "Failed to download asset ${CHOSEN_ASSET} from ${chosen_url}."
+        exit 1
+    fi
     DOWNLOADED_FILE="${tmp_dir}/${CHOSEN_ASSET}"
 }
 
-# Verify SHA-256 hash
+# Verify SHA-256 hash (strict fail-closed verification)
 verify_checksum() {
     local target_file="$1"
     local checksums_file="$2"
@@ -321,36 +345,42 @@ verify_checksum() {
     filename="$(basename "${target_file}")"
 
     if [ ! -f "${checksums_file}" ]; then
-        log_warn "No checksums.txt available for this release; proceeding without hash check."
-        return 0
+        log_error "Checksums file '${checksums_file}' is missing. Cannot verify release asset (fail-closed)."
+        return 1
     fi
 
     local expected_hash
-    expected_hash="$(grep -E "[[:space:]]${filename}\$" "${checksums_file}" | awk '{print $1}' || true)"
+    expected_hash="$(grep -E "[[:space:]]${filename}\$" "${checksums_file}" | awk '{print $1}' | tr -d ' \r\n' || true)"
 
     if [ -z "${expected_hash}" ]; then
-        log_warn "No checksum entry found for ${filename} in checksums.txt; proceeding."
-        return 0
+        log_error "No checksum entry found for '${filename}' in checksums.txt! Aborting for security (fail-closed)."
+        return 1
+    fi
+
+    if [[ ! "${expected_hash}" =~ ^[a-fA-F0-9]{64}$ ]]; then
+        log_error "Invalid SHA-256 hash format for '${filename}' in checksums.txt: '${expected_hash}'."
+        return 1
     fi
 
     log_info "Verifying SHA-256 checksum for ${filename}..."
     local actual_hash=""
     if command -v sha256sum >/dev/null 2>&1; then
-        actual_hash="$(sha256sum "${target_file}" | awk '{print $1}')"
+        actual_hash="$(sha256sum "${target_file}" | awk '{print $1}' | tr -d ' \r\n')"
     elif command -v shasum >/dev/null 2>&1; then
-        actual_hash="$(shasum -a 256 "${target_file}" | awk '{print $1}')"
+        actual_hash="$(shasum -a 256 "${target_file}" | awk '{print $1}' | tr -d ' \r\n')"
     else
-        actual_hash="$(python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())" "${target_file}")"
+        actual_hash="$(python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())" "${target_file}" | tr -d ' \r\n')"
     fi
 
     if [ "${actual_hash}" != "${expected_hash}" ]; then
         log_error "Checksum verification failed for ${filename}!"
         echo "    Expected: ${expected_hash}" >&2
         echo "    Got:      ${actual_hash}" >&2
-        exit 1
+        return 1
     fi
 
     log_success "SHA-256 verified: ${actual_hash:0:16}..."
+    return 0
 }
 
 # Install RPM package
@@ -454,12 +484,14 @@ main() {
             exit 1
         fi
         log_info "Installing from local file: ${BOLD}${LOCAL_FILE}${RESET}"
+        log_warn "Local-file mode trusts the specified file on disk without remote checksum verification."
         package_file="${LOCAL_FILE}"
     else
         fetch_release_assets "${TMP_DIR}"
         package_file="${DOWNLOADED_FILE}"
-        if [ -f "${TMP_DIR}/checksums.txt" ]; then
-            verify_checksum "${package_file}" "${TMP_DIR}/checksums.txt"
+        if ! verify_checksum "${package_file}" "${TMP_DIR}/checksums.txt"; then
+            log_error "Release asset checksum verification failed closed. Aborting installation."
+            exit 1
         fi
     fi
 

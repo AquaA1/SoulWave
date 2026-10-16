@@ -5,6 +5,11 @@ name: Release Pipeline
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (must match format vX.Y.Z, e.g., v0.1.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -66,7 +71,7 @@ jobs:
           retention-days: 1
 
   build-rpm:
-    name: Build Native Fedora RPM
+    name: Build Standalone Fedora RPM
     needs: [test, build-python]
     runs-on: ubuntu-latest
 
@@ -80,7 +85,7 @@ jobs:
           name: python-dist
           path: dist
 
-      - name: Build RPM inside Fedora container
+      - name: Build Standalone RPM inside Fedora container
         run: |
           docker run --rm \
             -v "${{ github.workspace }}:/workspace" \
@@ -109,6 +114,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Validate Release Tag
+        run: |
+          TARGET_TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "${TARGET_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+            echo "ERROR: Invalid tag format '${TARGET_TAG}'. Must start with 'v' followed by semantic version (e.g. v0.1.0)." >&2
+            exit 1
+          fi
+          echo "RELEASE_TAG=${TARGET_TAG}" >> "$GITHUB_ENV"
+
       - name: Download Python distributions
         uses: actions/download-artifact@v4
         with:
@@ -121,6 +135,23 @@ jobs:
           name: rpm-dist
           path: release-artifacts
 
+      - name: Verify Required Artifacts Exist
+        working-directory: release-artifacts
+        run: |
+          ls -la
+          if ! compgen -G "*.whl" > /dev/null; then
+            echo "ERROR: Missing required Python wheel artifact (*.whl)!" >&2
+            exit 1
+          fi
+          if ! compgen -G "*.rpm" > /dev/null; then
+            echo "ERROR: Missing required Fedora RPM artifact (*.rpm)!" >&2
+            exit 1
+          fi
+          if ! compgen -G "*.tar.gz" > /dev/null; then
+            echo "ERROR: Missing required source tarball (*.tar.gz)!" >&2
+            exit 1
+          fi
+
       - name: Generate SHA-256 Checksums
         working-directory: release-artifacts
         run: |
@@ -131,6 +162,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release-artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true

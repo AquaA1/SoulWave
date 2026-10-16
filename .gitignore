@@ -17,6 +17,7 @@ sdist/
 var/
 wheels/
 share/python-wheels/
+packaging/rpm/vendor_wheels/
 *.egg-info/
 .installed.cfg
 *.egg
