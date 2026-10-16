@@ -9,6 +9,24 @@ from soulwave.player.base import PlaybackStatus
 from soulwave.player.mpris import MPRISPlayer
 
 
+def _can_run_dbus_mock():
+    try:
+        import dbus
+        import dbus.mainloop.glib
+        from gi.repository import GLib
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        bus = dbus.SessionBus()
+        return True
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _can_run_dbus_mock(),
+    reason="D-Bus session bus and dbus/gi libraries required for mock Chromium tests",
+)
+
+
 @pytest.fixture(scope="module")
 def chromium_process():
     bus_name = "org.mpris.MediaPlayer2.chromium_test_suite"
