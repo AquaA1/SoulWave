@@ -134,12 +134,15 @@ def test_lyrics_client_async_outdated_track_discarded(mock_search):
     import threading
 
     t1_started = threading.Event()
+    t2_submitted = threading.Event()
+    t2_done = threading.Event()
 
     # Simulate slow search for track 1, then fast search for track 2
     def slow_search(query, **kwargs):
         if "Track 1" in query:
             t1_started.set()
-            time.sleep(0.1)
+            # Wait until Track 2 has been dispatched so Track 1 is definitely superseded
+            assert t2_submitted.wait(timeout=5.0), "Timed out waiting for Track 2 to be submitted"
             return "[00:10.00] Track 1 lyrics"
         return "[00:05.00] Track 2 lyrics"
 
@@ -156,20 +159,22 @@ def test_lyrics_client_async_outdated_track_discarded(mock_search):
 
         def cb2(data):
             results.append(("track2", data))
+            t2_done.set()
 
         # Launch track 1
         client.fetch_lyrics_async("Artist", "Track 1", callback=cb1)
         # Wait until track 1 search thread has definitely begun
-        t1_started.wait(timeout=2.0)
-        # Immediately change track to track 2
+        assert t1_started.wait(timeout=5.0), "Track 1 search thread failed to start"
+        # While Track 1 is waiting, immediately change track to track 2
         client.fetch_lyrics_async("Artist", "Track 2", callback=cb2)
+        # Now release Track 1; its request_id is now outdated compared to Track 2
+        t2_submitted.set()
 
-        # Wait for workers to finish (poll up to 3.0 seconds)
-        for _ in range(60):
-            if len(results) > 0:
-                time.sleep(0.15)  # give a moment for any superseded callback to erroneously fire
-                break
-            time.sleep(0.05)
+        # Wait for track 2 to finish
+        assert t2_done.wait(timeout=5.0), "Track 2 callback never fired"
+
+        # Give background threads a short moment to ensure cb1 did not fire
+        time.sleep(0.1)
 
         # cb1 must have been discarded because track 1 was superseded!
         assert len(results) == 1
