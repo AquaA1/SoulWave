@@ -148,6 +148,8 @@ class RoomScene:
         self,
         mascot_sprite: PixelSprite,
         accent_color: RGBColor | None = None,
+        sway_x: int = 0,
+        bounce_y: int = 0,
     ) -> Text:
         """Compose the mascot sprite centered inside the room scene with particles."""
         # Convert mascot sprite to rich text lines
@@ -168,15 +170,7 @@ class RoomScene:
                 canvas_chars[sy][sx] = schar
                 canvas_styles[sy][sx] = Style(color=f"rgb({brightness},{brightness},{brightness})")
 
-        # Mascot top-left placement with smooth rhythmic sway and bounce when playing
-        sway_x = 0
-        bounce_y = 0
-        if self._is_playing:
-            sway_amp = 1.6 + (getattr(self, "energy", 0.0) * 0.8)
-            sway_x = int(round(math.sin(self._ambient_phase * 1.4) * sway_amp))
-            bounce_amp = 0.6 + (getattr(self, "energy", 0.0) * 0.4)
-            bounce_y = int(round(abs(math.sin(self._ambient_phase * 2.8)) * bounce_amp))
-
+        # Mascot top-left placement with restrained rhythmic sway and bounce (visually centered)
         base_x = (self.width - mascot_w) // 2
         base_y = (self.height - mascot_h) // 2
 

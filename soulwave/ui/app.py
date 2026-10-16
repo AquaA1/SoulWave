@@ -470,12 +470,16 @@ class SoulwaveApp(App):
 
     def action_next(self) -> None:
         self.player_manager.current_player.next_track()
-        self.mascot_animator.trigger_reaction(MascotState.SEEKING, duration=0.6)
+        self.mascot_animator.begin_track_transition()
+        if hasattr(self, "companion_view"):
+            self.companion_view.set_track_transition(True)
         self._sync_player_state()
 
     def action_previous(self) -> None:
         self.player_manager.current_player.previous_track()
-        self.mascot_animator.trigger_reaction(MascotState.SEEKING, duration=0.6)
+        self.mascot_animator.begin_track_transition()
+        if hasattr(self, "companion_view"):
+            self.companion_view.set_track_transition(True)
         self._sync_player_state()
 
     def action_seek_forward(self) -> None:

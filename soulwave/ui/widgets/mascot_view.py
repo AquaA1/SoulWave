@@ -37,5 +37,10 @@ class MascotView(Widget):
 
     def render(self) -> Text:
         sprite = self.animator.tick()
-        # Compose frame inside room scene
-        return self.scene.compose_frame(sprite, self.accent_color)
+        # Compose frame inside room scene with smooth deterministic offsets
+        return self.scene.compose_frame(
+            sprite,
+            self.accent_color,
+            sway_x=self.animator.sway_x,
+            bounce_y=self.animator.bounce_y,
+        )

@@ -75,6 +75,18 @@ class CompanionDanceView(Widget):
         "  WWWWWWW  ",
         "  WW W WW  ",
     ]
+    PIP_PLAY_2 = [
+        "           ",
+        "    E EE   ",
+        "     E     ",
+        "   HHHHH   ",
+        "  HWWWWWH  ",
+        " EEWWWWWEE ",
+        " EEWD DWEE ",
+        "  HWP PWH  ",
+        "  WWWWWWW  ",
+        "  WW W WW  ",
+    ]
     PIP_PAUSED = [
         "    EEE    ",
         "     E     ",
@@ -113,7 +125,7 @@ class CompanionDanceView(Widget):
         "   WWWWW   ",
         "   W W W   ",
     ]
-    NOVA_PLAY_1 = [
+    NOVA_HOP_1 = [
         "      YSY  ",
         "       Y   ",
         "   HHHHH   ",
@@ -124,6 +136,18 @@ class CompanionDanceView(Widget):
         "  WWWWWWW  ",
         "   WWWWW   ",
         "   WW WW   ",
+    ]
+    NOVA_HOP_2 = [
+        "      YYY  ",
+        "     YSYSY ",
+        "   HHHHH   ",
+        "  HWWWWWH  ",
+        " YYWWWWWYY ",
+        " YYW^ ^WYY ",
+        "  HWP PWH  ",
+        "  WWWWWWW  ",
+        "   WWWWW   ",
+        "   W   W   ",
     ]
     NOVA_PAUSED = [
         "       Y   ",
@@ -151,29 +175,41 @@ class CompanionDanceView(Widget):
     ]
 
     # --- Companion 3: Mochi (The sleepy soul) ---
-    MOCHI_PLAY_0 = [
+    MOCHI_TILT_LEFT = [
+        "        V  ",
+        "       V   ",
+        "  HHHHH    ",
+        " HWWWWWH   ",
+        "VVWWWWWVV  ",
+        "VVWD DWVV  ",
+        " HWP PWH   ",
+        "  WWWWW    ",
+        "  WWWWW    ",
+        "  W W W    ",
+    ]
+    MOCHI_CENTER = [
         "        V  ",
         "       V   ",
         "   HHHHH   ",
         "  HWWWWWH  ",
         " VVWWWWWVV ",
-        " VVWD DWVV ",
+        " VVW- -WVV ",
         "  HWP PWH  ",
         "   WWWWW   ",
         "   WWWWW   ",
         "   W W W   ",
     ]
-    MOCHI_PLAY_1 = [
+    MOCHI_TILT_RIGHT = [
         "         V ",
         "        V  ",
-        "   HHHHH   ",
-        "  HWWWWWH  ",
-        " VVWWWWWVV ",
-        " VVW~ ~WVV ",
-        "  HWP PWH  ",
-        "   WWWWW   ",
-        "   WWWWW   ",
-        "   W W W   ",
+        "    HHHHH  ",
+        "   HWWWWWH ",
+        "  VVWWWWWVV",
+        "  VVWD DWVV",
+        "   HWP PWH ",
+        "    WWWWW  ",
+        "    WWWWW  ",
+        "    W W W  ",
     ]
     MOCHI_PAUSED = [
         "        V  ",
@@ -209,9 +245,15 @@ class CompanionDanceView(Widget):
         super().__init__(name=name, id=id, classes=classes)
         self.is_playing: bool = False
         self.is_paused: bool = False
+        self.in_track_transition: bool = False
         self.energy: float = 0.0
         self.accent_color: RGB = (56, 189, 248)
         self._tick_count: int = 0
+
+    def set_track_transition(self, active: bool) -> None:
+        """Inform companions of an in-progress track transition."""
+        self.in_track_transition = active
+        self.refresh()
 
     def update_state(
         self,
@@ -219,9 +261,11 @@ class CompanionDanceView(Widget):
         is_paused: bool,
         accent: RGB,
         energy: float = 0.0,
+        in_transition: bool = False,
     ) -> None:
         self.is_playing = is_playing
         self.is_paused = is_paused
+        self.in_track_transition = in_transition
         self.accent_color = accent
         self.energy = max(0.0, min(1.0, energy))
         self._tick_count += 1
@@ -240,20 +284,41 @@ class CompanionDanceView(Widget):
         header_bar = f"{'─' * dash_len}{title_text}{'─' * dash_len}\n"
         t.append(header_bar, style=Style(color="rgb(100, 116, 139)"))
 
-        # Determine frame index based on playback and audio energy
-        if self.is_playing:
-            # Pip: calm, gentle bobbing (period 6 ticks, 4 if high energy)
-            pip_period = 4 if self.energy > 0.4 else 6
-            pip_f = self.PIP_PLAY_0 if (self._tick_count // pip_period) % 2 == 0 else self.PIP_PLAY_1
+        # Determine frame index based on playback state and transition
+        if self.is_playing and not self.in_track_transition:
+            # Pip: noticeable vertical bob with gentle green leaf flutter (period 18 ticks)
+            pip_idx = self._tick_count % 18
+            if pip_idx < 6:
+                pip_f = self.PIP_PLAY_0
+            elif pip_idx < 12:
+                pip_f = self.PIP_PLAY_1
+            else:
+                pip_f = self.PIP_PLAY_2
 
-            # Nova: lively, energetic two-step bounce (period 3 ticks, 2 if high energy)
-            nova_period = 2 if self.energy > 0.4 else 3
-            nova_f = self.NOVA_PLAY_0 if (self._tick_count // nova_period) % 2 == 0 else self.NOVA_PLAY_1
+            # Nova: stronger bounce with occasional double-bounce and short pause (period 16 ticks)
+            nova_idx = self._tick_count % 16
+            if nova_idx < 4:
+                nova_f = self.NOVA_PLAY_0
+            elif nova_idx < 7:
+                nova_f = self.NOVA_HOP_1
+            elif nova_idx < 9:
+                nova_f = self.NOVA_PLAY_0
+            elif nova_idx < 12:
+                nova_f = self.NOVA_HOP_2
+            else:
+                nova_f = self.NOVA_PLAY_0
 
-            # Mochi: gentle sleepy side-to-side rocking (period 8 ticks)
-            mochi_period = 8
-            mochi_f = self.MOCHI_PLAY_0 if (self._tick_count // mochi_period) % 2 == 0 else self.MOCHI_PLAY_1
-        elif self.is_paused:
+            # Mochi: visible side-to-side rocking with headphone tilt (period 16 ticks, phase offset 4)
+            mochi_idx = (self._tick_count + 4) % 16
+            if mochi_idx < 4:
+                mochi_f = self.MOCHI_TILT_LEFT
+            elif mochi_idx < 8:
+                mochi_f = self.MOCHI_CENTER
+            elif mochi_idx < 12:
+                mochi_f = self.MOCHI_TILT_RIGHT
+            else:
+                mochi_f = self.MOCHI_CENTER
+        elif self.in_track_transition or self.is_paused:
             pip_f = self.PIP_PAUSED
             nova_f = self.NOVA_PAUSED
             mochi_f = self.MOCHI_PAUSED
