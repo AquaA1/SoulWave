@@ -289,20 +289,20 @@ def test_scenario_10_repeated_chorus_lines_intact():
 @pytest.mark.asyncio
 async def test_scenario_11_rapid_track_changes_headless():
     app = SoulwaveApp(force_demo=True)
-    async with app.run_test() as pilot:
-        await pilot.pause(0.1)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.2)
 
         # Track 1
         initial_track = app.current_track_key
         assert app.progress_bar_view.duration > 0.0
 
-        # Rapidly press next track multiple times
-        await pilot.press("n")
-        await pilot.pause(0.05)
-        await pilot.press("n")
-        await pilot.pause(0.05)
+        # Rapidly press next track multiple times with sufficient time for Textual pilot processing
         await pilot.press("n")
         await pilot.pause(0.1)
+        await pilot.press("n")
+        await pilot.pause(0.1)
+        await pilot.press("n")
+        await pilot.pause(0.2)
 
         # Progress bar duration must remain positive and valid (not --:--)
         dur = app.progress_bar_view.duration

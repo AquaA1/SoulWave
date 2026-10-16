@@ -109,13 +109,24 @@ jobs:
       - name: Run test suite
         run: |
           set -o pipefail
-          pytest -v --tb=short 2>&1 | tee test_output.log || {
+          pytest -v --tb=short -ra 2>&1 | tee test_output.log || {
+            FAILURES=$(grep -E '^(FAILED|ERROR) ' test_output.log | tr '\n' ' ' || true)
+            echo "::error title=Pytest Failures::$FAILURES"
             echo "### Pytest Failure Output" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             cat test_output.log >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 1
           }
+
+      - name: Upload test output log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-log-${{ matrix.python-version }}
+          path: test_output.log
+          retention-days: 1
+          if-no-files-found: ignore
 
   build-python:
     name: Build Wheel and Source Distribution

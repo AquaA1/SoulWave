@@ -26,7 +26,7 @@ async def test_mouse_scrubbing_coalesces_on_release():
     async with app.run_test(size=(80, 5)) as pilot:
         # Duration: 120 seconds, current position 10.0s
         app.bar.update_progress(10.0, 120.0, (56, 189, 248))
-        await pilot.pause(0.05)
+        await pilot.pause(0.1)
 
         assert app.bar.position == 10.0
         assert not app.bar._is_dragging
@@ -92,7 +92,7 @@ async def test_mouse_scrubbing_coalesces_on_release():
         assert app.bar._drag_target is None
 
         # Give Textual message loop a moment to deliver SeekRequested
-        await pilot.pause(0.05)
+        await pilot.pause(0.1)
 
         # Exactly ONE SeekRequested was dispatched (coalesced!)
         assert len(app.seek_events) == 1

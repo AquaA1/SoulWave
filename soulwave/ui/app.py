@@ -314,6 +314,11 @@ class SoulwaveApp(App):
         # Update Views
         self.now_playing_view.update_state(state, self.accent_color)
         self.controls_view.update_state(state, self.accent_color)
+        self.progress_bar_view.update_progress(
+            state.position_seconds,
+            meta.duration_seconds,
+            self.accent_color,
+        )
 
     def _animation_tick(self) -> None:
         """High-frequency tick for smooth mascot animation, progress interpolation, and visualizer."""
