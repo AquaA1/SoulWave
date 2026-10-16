@@ -28,6 +28,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Resolve and validate release ref
         id: resolve
         env:
@@ -63,7 +68,7 @@ jobs:
 
           # 3. Check out the target tag and verify version consistency with pyproject.toml
           git checkout "${TARGET_TAG}"
-          PYPROJECT_VERSION=$(python3 -c "import re; m = re.search(r'^version\s*=\s*[\"\\\']([^\"\\\']+)[\"\\\']', open('pyproject.toml', 'r', encoding='utf-8').read(), re.M); print(m.group(1))")
+          PYPROJECT_VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
 
           if [ "${TARGET_VERSION}" != "${PYPROJECT_VERSION}" ]; then
             echo "ERROR: Version mismatch! Release tag '${TARGET_TAG}' implies version '${TARGET_VERSION}', but pyproject.toml specifies '${PYPROJECT_VERSION}'." >&2

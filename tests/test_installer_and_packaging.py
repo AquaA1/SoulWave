@@ -373,3 +373,34 @@ def test_release_tag_and_pyproject_version_consistency():
     # Mismatched version
     mismatched_tag = "v99.99.99"
     assert mismatched_tag.lstrip("v") != current_version
+
+
+def test_release_workflow_version_extraction_snippet():
+    """Verify that the exact python script in release.yml extracts project.version without error."""
+    import sys
+    import yaml
+    import subprocess
+    content = RELEASE_YML.read_text(encoding="utf-8")
+    data = yaml.safe_load(content)
+    steps = data["jobs"]["validate"]["steps"]
+    resolve_step = next(s for s in steps if s.get("id") == "resolve")
+    run_script = resolve_step["run"]
+
+    # Verify tomllib is used in the script
+    assert "tomllib" in run_script
+    assert "PYPROJECT_VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open(\"pyproject.toml\", \"rb\"))[\"project\"][\"version\"])')" in run_script
+
+    # Run the exact snippet directly from repo root
+    res = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])',
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "0.1.0"
+
