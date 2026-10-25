@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-VERSION="${1:-0.1.1}"
+VERSION="${1:-0.1.4}"
 RELEASE="${2:-1}"
 TMP_BUILD_DIR="/tmp/soulwave-rpmbuild-$$"
 DIST_DIR="${PROJECT_ROOT}/dist"

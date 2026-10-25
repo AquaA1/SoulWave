@@ -33,6 +33,7 @@ class LyricsPanelView(Widget):
         self.lines: List[LyricLine] = []
         self.plain_text: Optional[str] = None
         self.is_loading: bool = False
+        self.is_waiting: bool = False
         self.offset_seconds: float = 0.0
         self.current_position: float = 0.0
         self.duration_seconds: float = 0.0
@@ -181,7 +182,11 @@ class LyricsPanelView(Widget):
         # 4. Empty lyrics with no active countdown
         if not self.lines and not self.plain_text:
             t.append("── LYRICS ──\n", style=Style(color="rgb(100, 116, 139)"))
-            t.append("\n  ♪ (No lyrics found for this track)", style=Style(color="rgb(100, 116, 139)"))
+            if self.is_waiting:
+                t.append("\n  🎧 Waiting for media playback...\n\n", style=Style(color="rgb(148, 163, 184)", bold=True))
+                t.append("  Start playing a song in Spotify, YouTube, or your media player", style=Style(color="rgb(100, 116, 139)"))
+            else:
+                t.append("\n  ♪ (No lyrics found for this track)", style=Style(color="rgb(100, 116, 139)"))
             return t
 
         # 5. Synchronized LRC lyrics

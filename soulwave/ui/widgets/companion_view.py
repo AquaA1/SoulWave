@@ -278,7 +278,7 @@ class CompanionDanceView(Widget):
         height = max(5, h)
         width = max(24, w)
 
-        # Header bar matching reference design
+        # Minimal header bar
         title_text = " COMPANIONS (GROOVE ROOM) " if width >= 44 else " COMPANIONS "
         dash_len = max(2, (width - len(title_text)) // 2)
         header_bar = f"{'─' * dash_len}{title_text}{'─' * dash_len}\n"
@@ -286,7 +286,7 @@ class CompanionDanceView(Widget):
 
         # Determine frame index based on playback state and transition
         if self.is_playing and not self.in_track_transition:
-            # Pip: noticeable vertical bob with gentle green leaf flutter (period 18 ticks)
+            # Pip: gentle leaf flutter
             pip_idx = self._tick_count % 18
             if pip_idx < 6:
                 pip_f = self.PIP_PLAY_0
@@ -295,7 +295,7 @@ class CompanionDanceView(Widget):
             else:
                 pip_f = self.PIP_PLAY_2
 
-            # Nova: stronger bounce with occasional double-bounce and short pause (period 16 ticks)
+            # Nova: subtle hop / rhythm
             nova_idx = self._tick_count % 16
             if nova_idx < 4:
                 nova_f = self.NOVA_PLAY_0
@@ -308,7 +308,7 @@ class CompanionDanceView(Widget):
             else:
                 nova_f = self.NOVA_PLAY_0
 
-            # Mochi: visible side-to-side rocking with headphone tilt (period 16 ticks, phase offset 4)
+            # Mochi: gentle subtle tilt
             mochi_idx = (self._tick_count + 4) % 16
             if mochi_idx < 4:
                 mochi_f = self.MOCHI_TILT_LEFT
@@ -332,11 +332,11 @@ class CompanionDanceView(Widget):
         n_lines = PixelSprite.from_ascii(nova_f, self.NOVA_MAP).render_to_rich_text().split()
         m_lines = PixelSprite.from_ascii(mochi_f, self.MOCHI_MAP).render_to_rich_text().split()
 
-        # Layout calculation
+        # Clean, grounded, minimal stationary layout
         sprite_w = 11
         gap = max(1, min(4, (width - (sprite_w * 3)) // 3))
         total_w = (sprite_w * 3) + (gap * 2)
-        left_pad = max(1, (width - total_w) // 2)
+        left_pad = max(0, (width - total_w) // 2)
         pad_str = " " * left_pad
         spacer = " " * gap
 
@@ -355,55 +355,18 @@ class CompanionDanceView(Widget):
             t.append_text(m_lines[row])
             t.append("\n")
 
-        # Name tags below sprites
-        pip_col = Style(color="rgb(74, 222, 128)", bold=True)
-        nova_col = Style(color="rgb(251, 191, 36)", bold=True)
-        mochi_col = Style(color="rgb(192, 132, 252)", bold=True)
-        tag_style = Style(color="rgb(148, 163, 184)")
-
-        t.append(pad_str)
-        t.append("    Pip    ", style=pip_col)
-        t.append(spacer)
-        t.append("   Nova    ", style=nova_col)
-        t.append(spacer)
-        t.append("   Mochi   ", style=mochi_col)
-        t.append("\n")
-
-        # Subtitles below names
-        if height >= 9:
-            sub_pip = "The gentle soul" if width >= 54 else "Gentle soul"
-            sub_nova = "The energetic soul" if width >= 54 else "Energetic"
-            sub_mochi = "The sleepy soul" if width >= 54 else "Sleepy soul"
-
-            # Center subtitles under each column
-            p_pad = max(0, (sprite_w - len(sub_pip)) // 2)
-            n_pad = max(0, (sprite_w - len(sub_nova)) // 2)
-            m_pad = max(0, (sprite_w - len(sub_mochi)) // 2)
+        # Clean minimal name tags (Pip, Nova, Mochi) - NO subtitles, NO extra text!
+        if height >= 8:
+            pip_col = Style(color="rgb(74, 222, 128)", bold=True)
+            nova_col = Style(color="rgb(251, 191, 36)", bold=True)
+            mochi_col = Style(color="rgb(192, 132, 252)", bold=True)
 
             t.append(pad_str)
-            t.append(" " * p_pad + sub_pip + " " * max(0, sprite_w - len(sub_pip) - p_pad), style=tag_style)
+            t.append("    Pip    ", style=pip_col)
             t.append(spacer)
-            t.append(" " * n_pad + sub_nova + " " * max(0, sprite_w - len(sub_nova) - n_pad), style=tag_style)
+            t.append("   Nova    ", style=nova_col)
             t.append(spacer)
-            t.append(" " * m_pad + sub_mochi + " " * max(0, sprite_w - len(sub_mochi) - m_pad), style=tag_style)
+            t.append("   Mochi   ", style=mochi_col)
             t.append("\n")
-
-        # Status text below
-        if height >= 11:
-            t.append("\n")
-            if self.is_playing:
-                energy_dot = "✨" if self.energy > 0.4 else "♪"
-                status_str = f" {energy_dot} Grooving with the beat"
-                status_col = Style(color=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})")
-            elif self.is_paused:
-                status_str = " ⏸  Resting calmly..."
-                status_col = tag_style
-            else:
-                status_str = " 💤 Fast asleep"
-                status_col = tag_style
-
-            status_pad = max(1, (width - len(status_str)) // 2)
-            t.append(" " * status_pad)
-            t.append(f"{status_str}\n", style=status_col)
 
         return t

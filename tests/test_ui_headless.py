@@ -1,6 +1,15 @@
 """Headless integration tests for SoulwaveApp using Textual pilot."""
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    class _MockPytest:
+        class mark:
+            @staticmethod
+            def asyncio(fn):
+                return fn
+    pytest = _MockPytest()
+
 from soulwave.config import Config
 from soulwave.player.base import PlaybackStatus
 from soulwave.ui.app import SoulwaveApp
@@ -142,3 +151,44 @@ async def test_lyrics_update_after_mascot_dance_and_track_change():
         assert len(app.lyrics_view.lines) > 0
         assert "Driving down" in app.lyrics_view.lines[0].text
         assert "Soft glow" not in app.lyrics_view.lines[0].text
+
+
+@pytest.mark.asyncio
+async def test_normal_startup_waiting_state_and_dynamic_discovery():
+    """Verify that starting without --demo enters waiting state (no ghost demo lyrics) and auto-discovers players."""
+    from soulwave.player.base import PlaybackStatus
+    from soulwave.player.mpris import MPRISPlayer
+
+    orig_list = MPRISPlayer.list_players
+    orig_probe = MPRISPlayer.probe_player_status
+    try:
+        # Start with no players on system
+        MPRISPlayer.list_players = classmethod(lambda cls: [])
+        MPRISPlayer.probe_player_status = classmethod(lambda cls, name: PlaybackStatus.DISCONNECTED)
+
+        cfg = Config(theme="night", fps=15)
+        app = SoulwaveApp(config=cfg, force_demo=False)
+
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(0.1)
+            # 1. Must be in DISCONNECTED waiting state, not demo mode
+            assert app._last_state.status == PlaybackStatus.DISCONNECTED
+            assert not app.player_manager.is_demo
+
+            # 2. Must not display Midnight Coffee or its lyrics
+            assert len(app.lyrics_view.lines) == 0
+            assert app.lyrics_view.is_waiting is True
+
+            # 3. Simulate media player appearing on the system and starting playback
+            MPRISPlayer.list_players = classmethod(lambda cls: ["spotify"])
+            MPRISPlayer.probe_player_status = classmethod(lambda cls, name: PlaybackStatus.PLAYING)
+
+            # Trigger periodic discovery
+            app._periodic_player_discovery()
+            await pilot.pause(0.1)
+
+            assert app.player_manager._active_player_name == "spotify"
+    finally:
+        MPRISPlayer.list_players = orig_list
+        MPRISPlayer.probe_player_status = orig_probe
+

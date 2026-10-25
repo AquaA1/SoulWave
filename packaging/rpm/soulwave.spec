@@ -1,4 +1,4 @@
-%{!?version: %global version 0.1.3}
+%{!?version: %global version 0.1.4}
 Name:           soulwave
 Version:        %{version}
 Release:        %{?release}%{!?release:1}%{?dist}
@@ -69,6 +69,12 @@ PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -m soulwave.cl
 %{_prefix}/lib/%{name}
 
 %changelog
+* Sun Oct 25 2026 Soulwave Contributors <support@soulwave.local> - 0.1.4-1
+- Fix unintended startup fallback to demo player when no player is running
+- Add dynamic player discovery loop and active playback prioritization
+- Implement clean waiting state with auto-reconnection on playback start
+- Remove cluttered subtitle text in companion view and make mini souls minimal
+
 * Fri Oct 16 2026 Soulwave Contributors <support@soulwave.local> - 0.1.3-1
 - Fix stale lyrics when switching between mascot dance and lyrics view on track change
 - Enable background lyrics prefetching while companion view is active

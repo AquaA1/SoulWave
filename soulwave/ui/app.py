@@ -213,6 +213,9 @@ class SoulwaveApp(App):
         # Low frequency player state sync (every 0.8s)
         self.set_interval(0.8, self._sync_player_state)
 
+        # Periodic player auto-discovery & active player sync (every 2.5s)
+        self.set_interval(2.5, self._periodic_player_discovery)
+
     def _apply_theme(self) -> None:
         """Apply colors according to theme and dynamic accent."""
         self.active_theme = get_theme(self.active_theme_name)
@@ -248,16 +251,31 @@ class SoulwaveApp(App):
         t.append("🎧 SOULWAVE", style=Style(color="rgb(255, 255, 255)", bold=True))
         t.append("   Player: ", style=Style(color="rgb(148, 163, 184)"))
         p_name = self._last_state.player_name or "None"
-        t.append(f"[{p_name}]", style=Style(color=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})", bold=True))
+        if self._last_state.status == PlaybackStatus.DISCONNECTED and (not p_name or p_name == "None"):
+            p_display = "Searching..."
+        else:
+            p_display = p_name
+        t.append(f"[{p_display}]", style=Style(color=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})", bold=True))
         t.append("   Theme: ", style=Style(color="rgb(148, 163, 184)"))
         t.append(self.active_theme.name, style=Style(color="rgb(203, 213, 225)"))
         t.append("   [h] Help", style=Style(color="rgb(100, 116, 139)"))
         self.top_bar.update(t)
 
+    def _periodic_player_discovery(self) -> None:
+        """Periodic background check (every 2.5s) to auto-discover newly opened players or sync active audio source."""
+        switched = self.player_manager.check_player_sync()
+        if switched:
+            self._sync_player_state()
+            self._update_top_bar()
+
     def _on_player_state_changed(self) -> None:
-        """Invoked from background MPRIS worker when player state/metadata updates."""
+        """Invoked from background MPRIS worker when player state/metadata updates or new player appears."""
         try:
-            self.call_from_thread(self._sync_player_state)
+            def _handle_event():
+                self.player_manager.check_player_sync()
+                self._sync_player_state()
+                self._update_top_bar()
+            self.call_from_thread(_handle_event)
         except Exception:
             pass
 
@@ -282,6 +300,14 @@ class SoulwaveApp(App):
 
         self._last_state = state
 
+        # Determine if we have an active connected track
+        is_connected = state.status != PlaybackStatus.DISCONNECTED
+        has_real_track = bool(meta.title.strip()) and meta.title not in (
+            "No Track Playing",
+            "Waiting for playback...",
+            "Waiting for media playback...",
+        )
+
         # Check track change
         if track_key != self.current_track_key:
             self.current_track_key = track_key
@@ -289,8 +315,16 @@ class SoulwaveApp(App):
             self._fetching_lyrics_track_key = ""
             self._auto_dance_active = False
             self.lyrics_view.cancel_countdown()
-            self.lyrics_view.set_lyrics(None, None, duration=meta.duration_seconds)
-            self.lyrics_view.set_loading()
+
+            if not is_connected or not has_real_track:
+                self.lyrics_view.is_waiting = True
+                self.lyrics_view.set_lyrics(None, None, duration=0.0)
+                self.lyrics_view.refresh()
+            else:
+                self.lyrics_view.is_waiting = False
+                self.lyrics_view.set_lyrics(None, None, duration=meta.duration_seconds)
+                self.lyrics_view.set_loading()
+
             if self.config.show_lyrics:
                 self.lyrics_view.display = True
                 self.companion_view.display = False
@@ -304,10 +338,13 @@ class SoulwaveApp(App):
             self.mascot_view.accent_color = self.accent_color
 
             # Update lyrics
-            self.lyrics_view.duration_seconds = meta.duration_seconds
-            self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
+            if is_connected and has_real_track:
+                self.lyrics_view.duration_seconds = meta.duration_seconds
+                self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
             self._update_top_bar()
         else:
+            if not is_connected or not has_real_track:
+                self.lyrics_view.is_waiting = True
             if meta.duration_seconds > 0.0:
                 self.lyrics_view.duration_seconds = meta.duration_seconds
 
@@ -383,7 +420,8 @@ class SoulwaveApp(App):
     ) -> None:
         """Fetch lyrics asynchronously or from demo mock player."""
         current_key = f"{artist}::{title}"
-        if not bool(title.strip()):
+        if not bool(title.strip()) or title in ("No Track Playing", "Waiting for playback...", "Waiting for media playback..."):
+            self.lyrics_view.is_waiting = True
             self.lyrics_view.set_lyrics(None, None, duration=duration)
             self._loaded_lyrics_track_key = current_key
             self._fetching_lyrics_track_key = ""

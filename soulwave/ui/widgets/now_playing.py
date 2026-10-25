@@ -43,20 +43,40 @@ class NowPlayingView(Widget):
         badge_style = Style(color="rgb(248, 250, 252)", bgcolor="rgb(51, 65, 85)", bold=True)
 
         # Player badge and status
+        is_disconnected = self.state.status == PlaybackStatus.DISCONNECTED
         player_name = self.state.player_name or "None"
-        status_symbol = "▶" if self.state.status == PlaybackStatus.PLAYING else "⏸"
-        status_text = f" {status_symbol} {self.state.status.value.upper()} "
-
-        t.append(f" {player_name.upper()} ", style=badge_style)
-        t.append(" ")
-        if self.state.status == PlaybackStatus.PLAYING:
-            t.append(status_text, style=Style(color="rgb(34, 197, 94)", bold=True))
+        if is_disconnected and (not player_name or player_name == "None"):
+            badge_name = "WAITING"
+            status_text = " ○ SEARCHING FOR PLAYER "
+            status_style = Style(color="rgb(148, 163, 184)", bold=True)
+        elif self.state.status == PlaybackStatus.PLAYING:
+            badge_name = player_name.upper()
+            status_text = " ▶ PLAYING "
+            status_style = Style(color="rgb(34, 197, 94)", bold=True)
+        elif self.state.status == PlaybackStatus.PAUSED:
+            badge_name = player_name.upper()
+            status_text = " ⏸ PAUSED "
+            status_style = Style(color="rgb(251, 191, 36)", bold=True)
         else:
-            t.append(status_text, style=Style(color="rgb(251, 191, 36)", bold=True))
+            badge_name = player_name.upper()
+            status_text = f" ■ {self.state.status.value.upper()} "
+            status_style = Style(color="rgb(148, 163, 184)", bold=True)
+
+        t.append(f" {badge_name} ", style=badge_style)
+        t.append(" ")
+        t.append(status_text, style=status_style)
         t.append("\n\n")
 
-        # Track title
-        title = self.state.metadata.title or "No Track Playing"
+        # Track title and metadata
+        if is_disconnected or not self.state.metadata.title or self.state.metadata.title == "No Track Playing":
+            title = "Waiting for media playback..."
+            artist = "Start playing a track in Spotify, YouTube, or your media player"
+            t.append(title, style=Style(color="rgb(255, 255, 255)", bold=True))
+            t.append("\n")
+            t.append(artist, style=dim_style)
+            return t
+
+        title = self.state.metadata.title
         t.append(title, style=Style(color="rgb(255, 255, 255)", bold=True))
         t.append("\n")
 

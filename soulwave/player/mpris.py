@@ -158,6 +158,38 @@ class MPRISPlayer(BasePlayer):
                 pass
         return []
 
+    @classmethod
+    def probe_player_status(cls, player_name: str) -> PlaybackStatus:
+        """Quickly check PlaybackStatus of an active player."""
+        if _DBUS_AVAILABLE:
+            try:
+                bus = dbus.SessionBus()
+                prefix = "org.mpris.MediaPlayer2."
+                bus_name = player_name if player_name.startswith(prefix) else f"{prefix}{player_name}"
+                player_obj = bus.get_object(bus_name, "/org/mpris/MediaPlayer2")
+                props_iface = dbus.Interface(player_obj, "org.freedesktop.DBus.Properties")
+                status_val = props_iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
+                return cls._parse_status(str(status_val))
+            except Exception:
+                pass
+
+        playerctl_bin = shutil.which("playerctl")
+        if playerctl_bin:
+            try:
+                res = subprocess.run(
+                    [playerctl_bin, "-p", player_name, "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.6,
+                    check=False,
+                )
+                if res.returncode == 0:
+                    return cls._parse_status(res.stdout.strip())
+            except Exception:
+                pass
+
+        return PlaybackStatus.DISCONNECTED
+
     def _resolve_bus_name(self) -> Optional[str]:
         """Resolves target player to full D-Bus bus name."""
         prefix = "org.mpris.MediaPlayer2."
@@ -192,41 +224,44 @@ class MPRISPlayer(BasePlayer):
             self._bus = dbus.SessionBus()
 
             self._bus_name = self._resolve_bus_name()
-            if not self._bus_name:
-                return False
-
-            self._player_obj = self._bus.get_object(self._bus_name, "/org/mpris/MediaPlayer2")
-            self._player_iface = dbus.Interface(self._player_obj, "org.mpris.MediaPlayer2.Player")
-            self._props_iface = dbus.Interface(self._player_obj, "org.freedesktop.DBus.Properties")
 
             # Start GLib event loop in background thread for signals
             self._loop = GLib.MainLoop()
             self._loop_thread = threading.Thread(target=self._loop.run, daemon=True, name="MPRIS-GLib")
             self._loop_thread.start()
 
-            # Subscribe to MPRIS signals
-            m1 = self._bus.add_signal_receiver(
-                self._on_seeked,
-                dbus_interface="org.mpris.MediaPlayer2.Player",
-                signal_name="Seeked",
-                bus_name=self._bus_name,
-                path="/org/mpris/MediaPlayer2",
-            )
-            m2 = self._bus.add_signal_receiver(
-                self._on_properties_changed,
-                dbus_interface="org.freedesktop.DBus.Properties",
-                signal_name="PropertiesChanged",
-                bus_name=self._bus_name,
-                path="/org/mpris/MediaPlayer2",
-            )
-            m3 = self._bus.add_signal_receiver(
+            # Global listener for any MPRIS player appearing or closing
+            m_name_owner = self._bus.add_signal_receiver(
                 self._on_name_owner_changed,
                 dbus_interface="org.freedesktop.DBus",
                 signal_name="NameOwnerChanged",
                 path="/org/freedesktop/DBus",
-                arg0=self._bus_name,
             )
-            self._signal_matches.extend([m1, m2, m3])
+            self._signal_matches.append(m_name_owner)
+
+            if self._bus_name:
+                try:
+                    self._player_obj = self._bus.get_object(self._bus_name, "/org/mpris/MediaPlayer2")
+                    self._player_iface = dbus.Interface(self._player_obj, "org.mpris.MediaPlayer2.Player")
+                    self._props_iface = dbus.Interface(self._player_obj, "org.freedesktop.DBus.Properties")
+
+                    m1 = self._bus.add_signal_receiver(
+                        self._on_seeked,
+                        dbus_interface="org.mpris.MediaPlayer2.Player",
+                        signal_name="Seeked",
+                        bus_name=self._bus_name,
+                        path="/org/mpris/MediaPlayer2",
+                    )
+                    m2 = self._bus.add_signal_receiver(
+                        self._on_properties_changed,
+                        dbus_interface="org.freedesktop.DBus.Properties",
+                        signal_name="PropertiesChanged",
+                        bus_name=self._bus_name,
+                        path="/org/mpris/MediaPlayer2",
+                    )
+                    self._signal_matches.extend([m1, m2])
+                except Exception as ex:
+                    logger.debug("Failed attaching to player bus %s: %s", self._bus_name, ex)
 
             # Start background command execution worker
             self._running = True
@@ -439,13 +474,21 @@ class MPRISPlayer(BasePlayer):
                 pass
 
     def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
-        """Detects media player exit or disconnect."""
-        if name == self._bus_name and not new_owner:
-            logger.info("Player %s disconnected from D-Bus", name)
+        """Detects media player launch, exit or disconnect."""
+        name_str = str(name)
+        if self._bus_name and name_str == self._bus_name and not new_owner:
+            logger.info("Player %s disconnected from D-Bus", name_str)
             with self._lock:
                 self._last_state.status = PlaybackStatus.DISCONNECTED
                 self._last_state.can_control = False
                 self._last_state.can_seek = False
+            if self.on_state_change:
+                try:
+                    self.on_state_change()
+                except Exception:
+                    pass
+        elif name_str.startswith("org.mpris.MediaPlayer2.") and new_owner:
+            logger.info("New MPRIS player appeared on D-Bus: %s", name_str)
             if self.on_state_change:
                 try:
                     self.on_state_change()
@@ -660,6 +703,9 @@ class MPRISPlayer(BasePlayer):
     def _get_state_playerctl(self) -> PlayerState:
         """Fallback state reader using playerctl."""
         if not self._playerctl_bin:
+            return PlayerState(status=PlaybackStatus.DISCONNECTED)
+
+        if not self.player_name and not self.list_players():
             return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
         output = self._run_cmd(["metadata", "--format", self.FORMAT_STRING], timeout=1.2)

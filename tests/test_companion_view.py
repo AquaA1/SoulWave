@@ -19,22 +19,20 @@ def test_companion_view_states():
     assert comp.energy == 0.8
     render_play = comp.render().plain
     assert "COMPANIONS" in render_play
-    assert "Pip" in render_play
-    assert "Nova" in render_play
-    assert "Mochi" in render_play
-    assert "soul" in render_play.lower() or "gentle" in render_play.lower()
-    assert "Grooving with the beat" in render_play
+    assert "sleepy soul" not in render_play.lower()
+    assert "gentle soul" not in render_play.lower()
+    assert "grooving with the beat" not in render_play.lower()
 
     # Paused state
     comp.update_state(is_playing=False, is_paused=True, accent=(255, 100, 150), energy=0.0)
     assert comp.is_paused is True
     render_paused = comp.render().plain
-    assert "Resting calmly" in render_paused
+    assert "resting calmly" not in render_paused.lower()
 
     # Idle / sleeping state
     comp.update_state(is_playing=False, is_paused=False, accent=(255, 100, 150), energy=0.0)
     render_idle = comp.render().plain
-    assert "Fast asleep" in render_idle
+    assert "fast asleep" not in render_idle.lower()
 
 
 def test_companion_view_compact_size():
@@ -44,22 +42,30 @@ def test_companion_view_compact_size():
     comp._test_width = 28
     comp.update_state(is_playing=True, is_paused=False, accent=(56, 189, 248))
     rendered = comp.render().plain
-    # Should render without throwing exception and contain companions
-    assert "Pip" in rendered
-    assert "Nova" in rendered
-    assert "Mochi" in rendered
+    assert "COMPANIONS" in rendered
+    assert "▀" in rendered or "▄" in rendered
 
 
-def test_companion_view_subtitles_and_pixel_art():
-    """Verify companion subtitles and pixel-art half-blocks render at standard size."""
+def test_companion_view_minimal_and_pixel_art():
+    """Verify that companion view is minimal, text subtitles are removed, and pixel-art renders cleanly."""
     comp = CompanionDanceView()
     comp._test_height = 12
     comp._test_width = 56
     comp.update_state(is_playing=True, is_paused=False, accent=(56, 189, 248), energy=0.5)
+
     rendered = comp.render().plain
 
-    assert "The gentle soul" in rendered
-    assert "The energetic soul" in rendered
-    assert "The sleepy soul" in rendered
+    # Texts must be removed
+    assert "The gentle soul" not in rendered
+    assert "The energetic soul" not in rendered
+    assert "The sleepy soul" not in rendered
+    assert "Grooving with the beat" not in rendered
+    assert "Fast asleep" not in rendered
+
     # Half-block characters from PixelSprite
     assert "▀" in rendered or "▄" in rendered
+
+    # Clean name tags present
+    assert "Pip" in rendered
+    assert "Nova" in rendered
+    assert "Mochi" in rendered
