@@ -1,15 +1,34 @@
-"""Comprehensive tests for installer script (install.sh), RPM packaging, and release workflow."""
+"""Comprehensive tests for installer script (install.sh), RPM packaging, binary packaging, and release workflow."""
 import hashlib
 import os
 import shutil
 import subprocess
 from pathlib import Path
-import pytest
+import unittest
+
+try:
+    import pytest
+except ImportError:
+    class _PytestMock:
+        @staticmethod
+        def skip(reason=""):
+            raise unittest.SkipTest(reason)
+
+        @staticmethod
+        def fixture(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+    pytest = _PytestMock()  # type: ignore
+
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "install.sh"
 RPM_SPEC = REPO_ROOT / "packaging" / "rpm" / "soulwave.spec"
+BINARY_SPEC = REPO_ROOT / "packaging" / "binary" / "soulwave.spec"
+BUILD_BINARY_SH = REPO_ROOT / "packaging" / "binary" / "build_binary.sh"
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 DIST_DIR = REPO_ROOT / "dist"
 VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
@@ -59,7 +78,7 @@ def get_built_wheel(version: str = PROJECT_VERSION):
     wheels = [w for w in DIST_DIR.glob("*.whl") if version in w.name]
     if wheels:
         return wheels[0]
-    all_wheels = list(DIST_DIR.glob("*.whl"))
+    all_wheels = sorted(DIST_DIR.glob("*.whl"), key=lambda w: w.name, reverse=True)
     return all_wheels[0] if all_wheels else None
 
 
@@ -76,10 +95,81 @@ def test_install_script_help():
         check=True,
     )
     assert "Soulwave Installer" in result.stdout
+    assert "--binary" in result.stdout
+    assert "--rpm" in result.stdout
+    assert "--wheel" in result.stdout
     assert "--version" in result.stdout
     assert "--file" in result.stdout
     assert "--user" in result.stdout
+    assert "--system" in result.stdout
     assert "--uninstall" in result.stdout
+
+
+def test_pyinstaller_spec_and_build_script():
+    """Verify PyInstaller spec file and build script exist, include styles.tcss, and are valid."""
+    assert BINARY_SPEC.is_file(), f"Binary spec {BINARY_SPEC} must exist"
+    spec_content = BINARY_SPEC.read_text(encoding="utf-8")
+    assert "styles.tcss" in spec_content, "soulwave.spec must bundle styles.tcss"
+    assert "soulwave.cli" in spec_content, "soulwave.spec must include soulwave.cli entry point"
+    assert "textual" in spec_content, "soulwave.spec must collect textual"
+
+    assert BUILD_BINARY_SH.is_file(), f"Build binary script {BUILD_BINARY_SH} must exist"
+    assert os.access(BUILD_BINARY_SH, os.X_OK), "build_binary.sh must be executable"
+    build_sh_content = BUILD_BINARY_SH.read_text(encoding="utf-8")
+    assert "pyinstaller" in build_sh_content
+    assert "soulwave-linux-" in build_sh_content
+
+
+def test_install_script_user_binary_and_uninstall(tmp_path):
+    """Test standalone binary installation with --user into ~/.local/bin and clean --uninstall."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    fake_bin = tmp_path / "soulwave-linux-x86_64"
+
+    # Create a mock standalone binary that satisfies --check
+    fake_bin.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--check\" ]; then\n"
+        "    echo 'Post-installation health check passed.'\n"
+        "    exit 0\n"
+        "fi\n"
+        "echo 'Soulwave standalone binary'\n"
+    )
+    fake_bin.chmod(0o755)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+
+    # 1. Install using --user and --file <binary>
+    res_install = subprocess.run(
+        [str(INSTALL_SH), "--file", str(fake_bin), "--user"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_install.returncode == 0, f"Installer failed: {res_install.stderr}\n{res_install.stdout}"
+    assert "Installing standalone Soulwave binary" in res_install.stdout
+    assert "Soulwave installed successfully!" in res_install.stdout
+
+    installed_launcher = fake_home / ".local" / "bin" / "soulwave"
+    assert installed_launcher.is_file(), "Launcher executable must exist at ~/.local/bin/soulwave"
+    assert os.access(installed_launcher, os.X_OK), "Installed launcher must be executable"
+
+    # Test launcher execution
+    run_res = subprocess.run([str(installed_launcher)], capture_output=True, text=True)
+    assert "Soulwave standalone binary" in run_res.stdout
+
+    # 2. Uninstall cleanly using --uninstall
+    res_uninstall = subprocess.run(
+        [str(INSTALL_SH), "--uninstall"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_uninstall.returncode == 0, f"Uninstaller failed: {res_uninstall.stderr}"
+    assert "Soulwave uninstalled successfully." in res_uninstall.stdout
+    assert not installed_launcher.exists(), "Launcher binary must be removed after uninstall"
+
 
 
 
@@ -404,10 +494,16 @@ def test_release_workflow_syntax_and_safety():
     assert "test" in jobs
     assert "build-python" in jobs
     assert "build-rpm" in jobs
+    assert "build-binary" in jobs
     assert "release" in jobs
 
+    # Verify release job depends on all build and test jobs
+    release_needs = jobs["release"]["needs"]
+    for required_dep in ["validate", "test", "build-python", "build-rpm", "build-binary"]:
+        assert required_dep in release_needs, f"Release job must depend on '{required_dep}'"
+
     # Verify all build and test jobs depend on validate and use the validated checkout ref
-    for job_name in ["test", "build-python", "build-rpm", "release"]:
+    for job_name in ["test", "build-python", "build-rpm", "build-binary", "release"]:
         job_needs = jobs[job_name]["needs"]
         if isinstance(job_needs, list):
             assert "validate" in job_needs, f"Job '{job_name}' must depend on 'validate'"
@@ -618,4 +714,45 @@ def test_installer_health_check_catches_missing_resource(tmp_path):
     check_fail = subprocess.run([str(launcher), "--check"], capture_output=True, text=True, env=env, cwd=str(tmp_path))
     assert check_fail.returncode != 0
     assert "Stylesheet file not found" in check_fail.stderr or "StylesheetError" in check_fail.stderr
+
+
+if __name__ == "__main__":
+    import inspect
+    import tempfile
+
+    current_module = sys.modules[__name__]
+    test_names = [
+        name for name in dir(current_module)
+        if name.startswith("test_") and callable(getattr(current_module, name))
+    ]
+
+    passed = 0
+    skipped = 0
+    failed = 0
+
+    print(f"Running {len(test_names)} packaging and installer tests...")
+    for name in sorted(test_names):
+        fn = getattr(current_module, name)
+        sig = inspect.signature(fn)
+        try:
+            if "tmp_path" in sig.parameters:
+                with tempfile.TemporaryDirectory() as td:
+                    fn(Path(td))
+            else:
+                fn()
+            print(f"  [PASS] {name}")
+            passed += 1
+        except unittest.SkipTest as e:
+            print(f"  [SKIP] {name}: {e}")
+            skipped += 1
+        except Exception as e:
+            print(f"  [FAIL] {name}: {e}")
+            import traceback
+            traceback.print_exc()
+            failed += 1
+
+    print(f"\nTest Summary: {passed} passed, {skipped} skipped, {failed} failed")
+    if failed > 0:
+        sys.exit(1)
+
 

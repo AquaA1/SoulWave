@@ -16,15 +16,17 @@
 > **A retro-futuristic terminal music controller featuring grooving pixel-art soul companions, synchronized scrolling lyrics, real-time CAVA spectrum visualization, and universal MPRIS support.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-orange.svg)](https://kernel.org)
+[![Binary: x86_64 | aarch64](https://img.shields.io/badge/Binary-x86__64%20%7C%20aarch64-blueviolet.svg)](https://github.com/AquaA1/SoulWave/releases)
 [![Packaging: Native RPM](https://img.shields.io/badge/RPM-Fedora%20%7C%20RHEL-informational.svg)](packaging/rpm/)
+[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)](https://www.python.org/)
 [![Release Pipeline](https://github.com/AquaA1/SoulWave/actions/workflows/release.yml/badge.svg)](https://github.com/AquaA1/SoulWave/actions/workflows/release.yml)
 
 ---
 
 ## Features
 
+- **Universal Standalone Binaries**: Single-file executables for `x86_64` and `aarch64` that run out of the box on Ubuntu, Debian, Mint, Fedora, Arch, openSUSE, Pop!_OS without Python or venv configuration.
 - **Universal MPRIS Control**: Automatically connects to Spotify, Firefox, Chrome, Brave, MPV, VLC, or any MPRIS-compatible player over D-Bus.
 - **Grooving Soul Companions**: Smooth pixel-art mascots (Pip, Nova, Mochi) dancing rhythmically with transition easing.
 - **Synchronized Lyrics**: Real-time `.lrc` scrolling lyrics via LRCLIB with auto-centering, local caching, and offset tuning (<kbd>[</kbd>/<kbd>]</kbd>).
@@ -36,39 +38,68 @@
 
 ## Installation
 
-### One-Liner Install (Recommended)
+### One-Liner Install (Universal Standalone Binary)
+
+Install Soulwave on **Ubuntu, Debian, Fedora, Arch Linux, Linux Mint, Pop!_OS, openSUSE**, or other compatible Linux distributions with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 ```
 
-### Fedora & RHEL (Manual RPM)
+- **Zero Python Configuration**: Downloads a verified, self-contained executable directly into `~/.local/bin/soulwave`. No virtual environments, `python3-venv`, or `pip` needed.
+- **Rootless & Secure**: Does not require `sudo`. All downloads are verified against SHA-256 release checksums (fail-closed).
+- **Supported Architectures**: `x86_64` (amd64) and `aarch64` (arm64).
 
-```bash
-sudo dnf install ./soulwave-*.rpm
-```
+> [!TIP]
+> If `~/.local/bin` is not yet in your `$PATH`, add it by running:
+> ```bash
+> echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+> ```
+
+### Alternative Installation Options
+
+- **Fedora / RHEL (Native RPM)**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --rpm
+  # Or install a downloaded RPM package directly:
+  sudo dnf install ./soulwave-*.rpm
+  ```
+
+- **Python Wheel (Virtual Environment)**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --wheel
+  ```
+
+- **System-Wide Install** (Installs to `/usr/local/bin`):
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --system
+  ```
+
+- **Uninstall Soulwave**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash -s -- --uninstall
+  ```
 
 ### Audio Utilities (Recommended for CAVA visualizer & playerctl)
 
-Fedora / RHEL / CentOS:
-```bash
-sudo dnf install playerctl cava
-```
+Soulwave runs out-of-the-box in demo mode, but installing `playerctl` and `cava` enables live desktop media tracking (Spotify, Firefox, etc.) and real-time audio visualization:
 
-Ubuntu / Debian / Linux Mint:
-```bash
-sudo apt update && sudo apt install playerctl cava
-```
-
-Arch Linux / Manjaro:
-```bash
-sudo pacman -S playerctl cava
-```
-
-openSUSE:
-```bash
-sudo zypper install playerctl cava
-```
+- **Fedora / RHEL / CentOS**:
+  ```bash
+  sudo dnf install playerctl cava
+  ```
+- **Ubuntu / Debian / Linux Mint / Pop!_OS**:
+  ```bash
+  sudo apt update && sudo apt install playerctl cava
+  ```
+- **Arch Linux / Manjaro**:
+  ```bash
+  sudo pacman -S playerctl cava
+  ```
+- **openSUSE**:
+  ```bash
+  sudo zypper install playerctl cava
+  ```
 
 ---
 

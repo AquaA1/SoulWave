@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# install.sh — Production-ready installer for Soulwave
+# install.sh — Universal, production-ready installer for Soulwave
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 # Options:
-#   bash install.sh [--version <v>] [--file <path>] [--user|--system] [--wheel] [--uninstall]
+#   bash install.sh [--version <v>] [--file <path>] [--binary|--rpm|--wheel] [--user|--system] [--uninstall]
 set -euo pipefail
 
 REPO="${SOULWAVE_REPO:-AquaA1/SoulWave}"
 TARGET_VERSION="${SOULWAVE_VERSION:-}"
 LOCAL_FILE="${SOULWAVE_FILE:-}"
-INSTALL_MODE="auto" # auto, user, system
-FORCE_WHEEL=0
+INSTALL_SCOPE="user" # user (default, rootless) or system
+INSTALL_FORMAT="auto" # auto (prefers binary), binary, rpm, wheel
 NO_DEPS=0
 DO_UNINSTALL=0
 TMP_DIR=""
+LAST_INSTALLED_LAUNCHER=""
 
 # Color formatting
 if [ -t 1 ]; then
@@ -50,16 +51,24 @@ while [[ $# -gt 0 ]]; do
             LOCAL_FILE="$2"
             shift 2
             ;;
-        --user)
-            INSTALL_MODE="user"
+        --binary)
+            INSTALL_FORMAT="binary"
             shift
             ;;
-        --system)
-            INSTALL_MODE="system"
+        --rpm)
+            INSTALL_FORMAT="rpm"
             shift
             ;;
         --wheel)
-            FORCE_WHEEL=1
+            INSTALL_FORMAT="wheel"
+            shift
+            ;;
+        --user)
+            INSTALL_SCOPE="user"
+            shift
+            ;;
+        --system)
+            INSTALL_SCOPE="system"
             shift
             ;;
         --no-deps)
@@ -79,11 +88,14 @@ USAGE:
     ./install.sh [OPTIONS]
 
 OPTIONS:
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.0)
-    --file, -f <path>    Install from a local .rpm or .whl file
-    --user               Install into user directory (~/.local/share/soulwave)
-    --system             Install into system directory (/opt/soulwave or RPM)
-    --wheel              Force wheel installation even on RPM distributions
+    --binary             Install standalone binary executable (default: universal, no Python required)
+    --rpm                Install native RPM package (Fedora, RHEL, CentOS)
+    --wheel              Install via Python wheel into isolated virtual environment
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.4)
+    --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
+    --user               Install into user directory (~/.local/bin, rootless, default)
+    --system             Install into system directory (/usr/local/bin or RPM)
+    --no-deps            Skip dependency installation / check (for offline/custom environments)
     --uninstall          Uninstall Soulwave cleanly from the system
     --help, -h           Show this help message
 
@@ -114,36 +126,49 @@ run_elevated() {
     fi
 }
 
+# Secure curl wrapper ensuring HTTP errors fail immediately
+curl_cmd() {
+    curl --fail --show-error --location "$@"
+}
+
 # Uninstallation handler
 uninstall_soulwave() {
     log_info "Uninstalling Soulwave..."
     local uninstalled=0
 
-    # 1. Check for native RPM install
-    if command -v rpm >/dev/null 2>&1 && rpm -q soulwave >/dev/null 2>&1; then
-        log_info "Detected RPM installation. Removing via package manager..."
-        if command -v dnf >/dev/null 2>&1; then
-            run_elevated dnf remove -y soulwave
-        else
-            run_elevated rpm -e soulwave
-        fi
-        uninstalled=1
-    fi
-
-    # 2. Check for system /opt install
-    if [ -d "/opt/soulwave" ] || [ -f "/usr/local/bin/soulwave" ]; then
-        log_info "Removing system files in /opt/soulwave and /usr/local/bin/soulwave..."
-        run_elevated rm -rf "/opt/soulwave" "/usr/local/bin/soulwave"
-        uninstalled=1
-    fi
-
-    # 3. Check for user install
-    local user_dir="${HOME}/.local/share/soulwave"
+    # 1. Remove user-level files first (rootless)
     local user_bin="${HOME}/.local/bin/soulwave"
-    if [ -d "${user_dir}" ] || [ -f "${user_bin}" ]; then
-        log_info "Removing user files in ${user_dir} and ${user_bin}..."
-        rm -rf "${user_dir}" "${user_bin}"
+    local user_dir="${HOME}/.local/share/soulwave"
+    if [ -f "${user_bin}" ]; then
+        log_info "Removing user binary ${user_bin}..."
+        rm -f "${user_bin}"
         uninstalled=1
+    fi
+    if [ -d "${user_dir}" ]; then
+        log_info "Removing user environment directory ${user_dir}..."
+        rm -rf "${user_dir}"
+        uninstalled=1
+    fi
+
+    # 2. Check for system files / RPM if system scope or root or if no user installation was present
+    if [ "${INSTALL_SCOPE}" = "system" ] || [ "$(id -u)" -eq 0 ] || ([ "${uninstalled}" -eq 0 ] && [ "${INSTALL_SCOPE}" != "user" ]); then
+        # Check for native RPM install
+        if command -v rpm >/dev/null 2>&1 && rpm -q soulwave >/dev/null 2>&1; then
+            log_info "Detected RPM installation. Removing via package manager..."
+            if command -v dnf >/dev/null 2>&1; then
+                run_elevated dnf remove -y soulwave
+            else
+                run_elevated rpm -e soulwave
+            fi
+            uninstalled=1
+        fi
+
+        # Check for system standalone binary or /opt install
+        if [ -f "/usr/local/bin/soulwave" ] || [ -d "/opt/soulwave" ]; then
+            log_info "Removing system files in /usr/local/bin/soulwave and /opt/soulwave..."
+            run_elevated rm -rf "/usr/local/bin/soulwave" "/opt/soulwave"
+            uninstalled=1
+        fi
     fi
 
     if [ "${uninstalled}" -eq 1 ]; then
@@ -157,6 +182,23 @@ uninstall_soulwave() {
 if [ "${DO_UNINSTALL}" -eq 1 ]; then
     uninstall_soulwave
 fi
+
+# Detect architecture
+detect_arch() {
+    local raw_arch
+    raw_arch="$(uname -m 2>/dev/null || echo "x86_64")"
+    case "${raw_arch}" in
+        x86_64|amd64)
+            ARCH="x86_64"
+            ;;
+        aarch64|arm64|armv8*)
+            ARCH="aarch64"
+            ;;
+        *)
+            ARCH="${raw_arch}"
+            ;;
+    esac
+}
 
 # Detect platform and distribution
 detect_os() {
@@ -187,23 +229,32 @@ detect_os() {
     esac
 }
 
-# Check system prerequisites
+# Check system prerequisites based on installation format
 check_prerequisites() {
     log_info "Checking system prerequisites..."
-    if ! command -v python3 >/dev/null 2>&1; then
-        log_error "Python 3 is required but was not found. Please install Python >= 3.10."
+
+    # Check for download utility
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        log_error "'curl' or 'wget' is required to download release assets. Please install one of them."
         exit 1
     fi
 
-    # Check python version >= 3.10
-    local py_ok
-    py_ok="$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)" 2>/dev/null || echo 0)"
-    if [ "${py_ok}" != "1" ]; then
-        log_error "Soulwave requires Python 3.10 or higher. Found: $(python3 --version 2>&1)"
-        exit 1
+    # If user explicitly forced wheel mode, check python requirements
+    if [ "${INSTALL_FORMAT}" = "wheel" ]; then
+        if ! command -v python3 >/dev/null 2>&1; then
+            log_error "Python 3 is required for --wheel mode but was not found. Please install Python >= 3.10, or use the default standalone binary installation."
+            exit 1
+        fi
+
+        local py_ok
+        py_ok="$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)" 2>/dev/null || echo 0)"
+        if [ "${py_ok}" != "1" ]; then
+            log_error "Soulwave --wheel mode requires Python 3.10 or higher. Found: $(python3 --version 2>&1)"
+            exit 1
+        fi
     fi
 
-    # Check optional recommended utilities
+    # Check optional recommended utilities (playerctl and cava)
     local missing_recommended=()
     if ! command -v playerctl >/dev/null 2>&1; then
         missing_recommended+=("playerctl")
@@ -214,30 +265,85 @@ check_prerequisites() {
 
     if [ ${#missing_recommended[@]} -gt 0 ]; then
         log_warn "Recommended audio utilities not found: ${missing_recommended[*]}"
-        echo "    Soulwave works without them (using mock player / audio fallback),"
-        echo "    but installing them enables full MPRIS music tracking and visualizer."
+        echo "    Soulwave runs without them (with built-in demo tracks / visualizer fallback),"
+        echo "    but installing them enables live MPRIS music tracking and real-time audio visualization."
         if [ "${IS_RPM_DISTRO}" -eq 1 ]; then
             echo -e "    ${BOLD}Install command:${RESET} sudo dnf install ${missing_recommended[*]}"
-        else
-            echo -e "    ${BOLD}Install command:${RESET} sudo apt install ${missing_recommended[*]}  (or your package manager)"
+        elif command -v apt >/dev/null 2>&1; then
+            echo -e "    ${BOLD}Install command:${RESET} sudo apt install ${missing_recommended[*]}"
+        elif command -v pacman >/dev/null 2>&1; then
+            echo -e "    ${BOLD}Install command:${RESET} sudo pacman -S ${missing_recommended[*]}"
+        elif command -v zypper >/dev/null 2>&1; then
+            echo -e "    ${BOLD}Install command:${RESET} sudo zypper install ${missing_recommended[*]}"
         fi
         echo ""
     fi
 }
 
-# Secure curl wrapper ensuring HTTP errors fail immediately
-curl_cmd() {
-    curl --fail --show-error --location "$@"
+# Download helper using curl or wget
+fetch_file() {
+    local url="$1"
+    local dest="$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl --fail --show-error --location -sSL -o "${dest}" "${url}"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "${dest}" "${url}"
+    else
+        log_error "Neither curl nor wget found to download files."
+        exit 1
+    fi
+}
+
+# Parse GitHub release JSON portably without python or jq dependencies
+parse_release_json() {
+    local json_file="$1"
+    local parsed_out="$2"
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.tag_name, (.assets[] | "\(.name) \(.browser_download_url)")' "${json_file}" > "${parsed_out}" 2>/dev/null && return 0
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c "
+import sys, json
+try:
+    with open('${json_file}', 'r', encoding='utf-8') as f:
+        d = json.load(f)
+    print(d.get('tag_name', ''))
+    for a in d.get('assets', []):
+        name = a.get('name', '')
+        url = a.get('browser_download_url', '')
+        if name and url:
+            print(f'{name} {url}')
+except Exception:
+    sys.exit(1)
+" > "${parsed_out}" 2>/dev/null && return 0
+    fi
+
+    # POSIX awk/grep fallback (works without python3 or jq)
+    local tag
+    tag="$(grep -m 1 '"tag_name":' "${json_file}" | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')"
+    echo "${tag}" > "${parsed_out}"
+    awk '
+        /"name":/ {
+            sub(/.*"name":[[:space:]]*"/, "")
+            sub(/".*/, "")
+            cur_name = $0
+        }
+        /"browser_download_url":/ {
+            sub(/.*"browser_download_url":[[:space:]]*"/, "")
+            sub(/".*/, "")
+            if (cur_name != "") {
+                print cur_name " " $0
+                cur_name = ""
+            }
+        }
+    ' "${json_file}" >> "${parsed_out}"
 }
 
 # Download release assets from GitHub
 fetch_release_assets() {
     local tmp_dir="$1"
-
-    if ! command -v curl >/dev/null 2>&1; then
-        log_error "'curl' is required to download release assets. Please install curl."
-        exit 1
-    fi
 
     local api_url
     if [ -n "${TARGET_VERSION}" ]; then
@@ -253,7 +359,7 @@ fetch_release_assets() {
     log_info "Querying GitHub release from ${api_url}..."
     local release_json="${tmp_dir}/release.json"
 
-    if ! curl_cmd -sSL -o "${release_json}" "${api_url}" 2>/dev/null; then
+    if ! fetch_file "${api_url}" "${release_json}"; then
         log_error "Failed to fetch release metadata from ${api_url}."
         if [ -n "${TARGET_VERSION}" ]; then
             echo "    Release tag '${TARGET_VERSION}' was not found on ${REPO}."
@@ -264,77 +370,83 @@ fetch_release_assets() {
         exit 1
     fi
 
-    # Parse tag and assets list using Python
-    local parse_result="${tmp_dir}/parsed_assets.txt"
-    python3 -c "
-import sys, json
-try:
-    with open('${release_json}', 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    tag = data.get('tag_name', 'unknown')
-    assets = data.get('assets', [])
-    with open('${parse_result}', 'w', encoding='utf-8') as out:
-        out.write(tag + '\n')
-        for a in assets:
-            out.write(f\"{a['name']} {a['browser_download_url']}\n\")
-except Exception as e:
-    sys.stderr.write(f'JSON parsing error: {e}\n')
-    sys.exit(1)
-" || {
+    local parsed_result="${tmp_dir}/parsed_assets.txt"
+    if ! parse_release_json "${release_json}" "${parsed_result}"; then
         log_error "Could not parse GitHub release metadata JSON."
         exit 1
-    }
+    fi
 
-    TAG_NAME="$(head -n 1 "${parse_result}")"
+    TAG_NAME="$(head -n 1 "${parsed_result}")"
+    if [ -z "${TAG_NAME}" ]; then
+        log_error "Invalid or empty release tag returned from GitHub API."
+        exit 1
+    fi
     log_info "Found release: ${BOLD}${TAG_NAME}${RESET}"
 
     # Download checksums.txt (fail-closed: MUST be present for release downloads)
     local checksums_url
-    checksums_url="$(grep -E "^checksums\.txt[[:space:]]" "${parse_result}" | awk '{print $2}' || true)"
+    checksums_url="$(grep -E "^checksums\.txt[[:space:]]" "${parsed_result}" | awk '{print $2}' || true)"
     if [ -z "${checksums_url}" ]; then
         log_error "Release ${TAG_NAME} does not contain 'checksums.txt'. Refusing to install unverified release (fail-closed)."
         exit 1
     fi
 
     log_info "Downloading checksums.txt..."
-    if ! curl_cmd -sSL -o "${tmp_dir}/checksums.txt" "${checksums_url}"; then
+    if ! fetch_file "${checksums_url}" "${tmp_dir}/checksums.txt"; then
         log_error "Failed to download checksums.txt from ${checksums_url}."
         exit 1
     fi
 
-    # Determine which asset to download
+    # Determine which asset to download based on INSTALL_FORMAT and system
     CHOSEN_ASSET=""
     local chosen_url=""
-    local arch
-    arch="$(uname -m 2>/dev/null || echo "x86_64")"
 
-    if [ "${IS_RPM_DISTRO}" -eq 1 ] && [ "${FORCE_WHEEL}" -eq 0 ] && [ "${INSTALL_MODE}" != "user" ]; then
-        # Check architecture-specific RPM first, then noarch, then any rpm
-        CHOSEN_ASSET="$(grep -E "\.${arch}\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
-        chosen_url="$(grep -E "\.${arch}\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+    # 1. Native RPM option if requested
+    if [ "${INSTALL_FORMAT}" = "rpm" ] || ([ "${INSTALL_FORMAT}" = "auto" ] && [ "${IS_RPM_DISTRO}" -eq 1 ] && [ "${INSTALL_SCOPE}" = "system" ]); then
+        CHOSEN_ASSET="$(grep -E "\.${ARCH}\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+        chosen_url="$(grep -E "\.${ARCH}\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
         if [ -z "${CHOSEN_ASSET}" ]; then
-            CHOSEN_ASSET="$(grep -E "\.noarch\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
-            chosen_url="$(grep -E "\.noarch\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+            CHOSEN_ASSET="$(grep -E "\.noarch\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+            chosen_url="$(grep -E "\.noarch\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
         fi
         if [ -z "${CHOSEN_ASSET}" ]; then
-            CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
-            chosen_url="$(grep -E "\.rpm[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+            CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+            chosen_url="$(grep -E "\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
         fi
     fi
 
-    # Fallback to wheel
+    # 2. Wheel option if requested
+    if [ "${INSTALL_FORMAT}" = "wheel" ] && [ -z "${CHOSEN_ASSET}" ]; then
+        CHOSEN_ASSET="$(grep -E "\.whl[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+        chosen_url="$(grep -E "\.whl[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
+    fi
+
+    # 3. Default: Standalone binary (preferred universal format)
     if [ -z "${CHOSEN_ASSET}" ]; then
-        CHOSEN_ASSET="$(grep -E "\.whl[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $1}' || true)"
-        chosen_url="$(grep -E "\.whl[[:space:]]" "${parse_result}" | head -n 1 | awk '{print $2}' || true)"
+        local bin_pattern="soulwave-linux-${ARCH}[[:space:]]"
+        CHOSEN_ASSET="$(grep -E "^${bin_pattern}" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+        chosen_url="$(grep -E "^${bin_pattern}" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
+    fi
+
+    # 4. Fallback if binary asset wasn't found (e.g. earlier releases only having wheel/rpm)
+    if [ -z "${CHOSEN_ASSET}" ]; then
+        if [ "${IS_RPM_DISTRO}" -eq 1 ]; then
+            CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+            chosen_url="$(grep -E "\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
+        fi
+    fi
+    if [ -z "${CHOSEN_ASSET}" ]; then
+        CHOSEN_ASSET="$(grep -E "\.whl[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
+        chosen_url="$(grep -E "\.whl[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
     fi
 
     if [ -z "${CHOSEN_ASSET}" ] || [ -z "${chosen_url}" ]; then
-        log_error "No suitable .rpm or .whl asset found in release ${TAG_NAME}."
+        log_error "No suitable release asset found for architecture '${ARCH}' in release ${TAG_NAME}."
         exit 1
     fi
 
     log_info "Downloading ${CHOSEN_ASSET}..."
-    if ! curl_cmd -#SL -o "${tmp_dir}/${CHOSEN_ASSET}" "${chosen_url}"; then
+    if ! fetch_file "${chosen_url}" "${tmp_dir}/${CHOSEN_ASSET}"; then
         log_error "Failed to download asset ${CHOSEN_ASSET} from ${chosen_url}."
         exit 1
     fi
@@ -372,8 +484,13 @@ verify_checksum() {
         actual_hash="$(sha256sum "${target_file}" | awk '{print $1}' | tr -d ' \r\n')"
     elif command -v shasum >/dev/null 2>&1; then
         actual_hash="$(shasum -a 256 "${target_file}" | awk '{print $1}' | tr -d ' \r\n')"
-    else
+    elif command -v openssl >/dev/null 2>&1; then
+        actual_hash="$(openssl dgst -sha256 "${target_file}" | awk '{print $NF}' | tr -d ' \r\n')"
+    elif command -v python3 >/dev/null 2>&1; then
         actual_hash="$(python3 -c "import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())" "${target_file}" | tr -d ' \r\n')"
+    else
+        log_error "No SHA-256 tool found (sha256sum, shasum, openssl, or python3)."
+        return 1
     fi
 
     if [ "${actual_hash}" != "${expected_hash}" ]; then
@@ -385,6 +502,40 @@ verify_checksum() {
 
     log_success "SHA-256 verified: ${actual_hash:0:16}..."
     return 0
+}
+
+# Install standalone executable binary
+install_binary() {
+    local bin_file="$1"
+    local bin_dir=""
+    local target_path=""
+
+    if [ "${INSTALL_SCOPE}" = "system" ] || [ "$(id -u)" -eq 0 ]; then
+        bin_dir="/usr/local/bin"
+        target_path="${bin_dir}/soulwave"
+        log_info "Installing standalone Soulwave binary to ${target_path} (system)..."
+        run_elevated mkdir -p "${bin_dir}"
+        run_elevated cp "${bin_file}" "${target_path}"
+        run_elevated chmod 0755 "${target_path}"
+    else
+        bin_dir="${HOME}/.local/bin"
+        target_path="${bin_dir}/soulwave"
+        log_info "Installing standalone Soulwave binary to ${target_path} (user)..."
+        mkdir -p "${bin_dir}"
+        cp "${bin_file}" "${target_path}"
+        chmod 0755 "${target_path}"
+    fi
+
+    LAST_INSTALLED_LAUNCHER="${target_path}"
+
+    # PATH verification
+    if [[ ":${PATH}:" != *":${bin_dir}:"* ]]; then
+        log_warn "${bin_dir} is not currently in your PATH."
+        echo "    To run 'soulwave' directly from any terminal, add it to your PATH:"
+        echo -e "        ${BOLD}export PATH=\"${bin_dir}:\$PATH\"${RESET}"
+        echo "    You can add this line to your ~/.bashrc, ~/.zshrc, or ~/.profile."
+        echo ""
+    fi
 }
 
 # Install RPM package
@@ -403,29 +554,25 @@ install_rpm() {
     LAST_INSTALLED_LAUNCHER="/usr/bin/soulwave"
 }
 
-# Install Wheel into an isolated directory
+# Install Wheel into an isolated directory (virtualenv)
 install_wheel() {
     local wheel_file="$1"
     local install_dir=""
     local bin_dir=""
     local needs_sudo=0
 
-    if [ "${INSTALL_MODE}" = "user" ]; then
-        install_dir="${HOME}/.local/share/soulwave"
-        bin_dir="${HOME}/.local/bin"
-    elif [ "$(id -u)" -eq 0 ]; then
+    if [ "${INSTALL_SCOPE}" = "system" ] || [ "$(id -u)" -eq 0 ]; then
         install_dir="/opt/soulwave"
         bin_dir="/usr/local/bin"
-    elif command -v sudo >/dev/null 2>&1 && [ "${INSTALL_MODE}" != "user" ]; then
-        install_dir="/opt/soulwave"
-        bin_dir="/usr/local/bin"
-        needs_sudo=1
+        if [ "$(id -u)" -ne 0 ]; then
+            needs_sudo=1
+        fi
     else
         install_dir="${HOME}/.local/share/soulwave"
         bin_dir="${HOME}/.local/bin"
     fi
 
-    log_info "Installing Soulwave to ${install_dir}..."
+    log_info "Installing Soulwave via Python wheel to ${install_dir}..."
 
     local pip_opts=("--no-warn-script-location" "--upgrade")
     if [ "${NO_DEPS}" -eq 1 ]; then
@@ -438,7 +585,6 @@ install_wheel() {
         run_elevated python3 -m venv --system-site-packages "${install_dir}"
         run_elevated "${install_dir}/bin/python3" -m pip install "${pip_opts[@]}" "${wheel_file}"
 
-        # Write launcher
         local launcher_tmp
         launcher_tmp="$(mktemp)"
         cat <<EOF > "${launcher_tmp}"
@@ -475,8 +621,9 @@ main() {
     echo "  ╚═══════════════════════════════════════════╝"
     echo -e "${RESET}"
 
+    detect_arch
     detect_os
-    log_info "Detected OS: ${BOLD}${OS_NAME}${RESET}"
+    log_info "Detected OS: ${BOLD}${OS_NAME}${RESET} (${ARCH})"
 
     check_prerequisites
 
@@ -501,6 +648,7 @@ main() {
         fi
     fi
 
+    # Determine installer route by file extension/format
     case "${package_file}" in
         *.rpm)
             install_rpm "${package_file}"
@@ -509,8 +657,8 @@ main() {
             install_wheel "${package_file}"
             ;;
         *)
-            log_error "Unrecognized package format: ${package_file}. Expected .rpm or .whl."
-            exit 1
+            # Standalone binary executable
+            install_binary "${package_file}"
             ;;
     esac
 
@@ -523,12 +671,12 @@ main() {
         if [ -z "${launcher_to_check}" ] || [ ! -x "${launcher_to_check}" ]; then
             if command -v soulwave >/dev/null 2>&1; then
                 launcher_to_check="$(command -v soulwave)"
+            elif [ -x "${HOME}/.local/bin/soulwave" ]; then
+                launcher_to_check="${HOME}/.local/bin/soulwave"
             elif [ -x "/usr/local/bin/soulwave" ]; then
                 launcher_to_check="/usr/local/bin/soulwave"
             elif [ -x "/usr/bin/soulwave" ]; then
                 launcher_to_check="/usr/bin/soulwave"
-            elif [ -x "${HOME}/.local/bin/soulwave" ]; then
-                launcher_to_check="${HOME}/.local/bin/soulwave"
             fi
         fi
 
@@ -542,7 +690,7 @@ main() {
             log_error "Installation health check failed! The installed Soulwave package is unable to start or is missing required runtime resources:"
             echo "${check_out}" >&2
             echo "" >&2
-            log_error "Please ensure all Python dependencies and required system packages are installed."
+            log_error "Please ensure your system meets minimum requirements."
             exit 1
         fi
         log_success "Post-installation health check passed."

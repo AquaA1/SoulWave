@@ -214,9 +214,55 @@ jobs:
           path: dist/*.rpm
           retention-days: 1
 
+  build-binary:
+    name: Build Standalone Binary (${{ matrix.arch }})
+    needs: [validate, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+
+    steps:
+      - name: Check out repository at validated ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate.outputs.checkout-ref }}
+
+      - name: Set up QEMU for multi-arch builds
+        if: matrix.arch == 'aarch64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build Standalone Binary inside Debian Bullseye container (glibc 2.31)
+        run: |
+          docker run --rm \
+            --platform "${{ matrix.platform }}" \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            python:3.10-slim-bullseye \
+            bash -c "
+              set -euo pipefail
+              apt-get update && apt-get install -y binutils
+              python -m pip install --upgrade pip
+              python -m pip install pyinstaller textual rich requests syncedlyrics
+              python -m pip install -e .
+              ./packaging/binary/build_binary.sh \"${{ matrix.arch }}\"
+            "
+
+      - name: Upload Standalone Binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: dist/soulwave-linux-${{ matrix.arch }}
+          retention-days: 1
+
   release:
     name: Publish GitHub Release
-    needs: [validate, test, build-python, build-rpm]
+    needs: [validate, test, build-python, build-rpm, build-binary]
     runs-on: ubuntu-latest
 
     steps:
@@ -237,6 +283,18 @@ jobs:
           name: rpm-dist
           path: release-artifacts
 
+      - name: Download x86_64 standalone binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-x86_64
+          path: release-artifacts
+
+      - name: Download aarch64 standalone binary
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-aarch64
+          path: release-artifacts
+
       - name: Verify Required Release Artifacts
         working-directory: release-artifacts
         env:
@@ -244,6 +302,14 @@ jobs:
         run: |
           set -euo pipefail
           ls -la
+          if [ ! -f "soulwave-linux-x86_64" ]; then
+            echo "ERROR: Missing standalone binary soulwave-linux-x86_64!" >&2
+            exit 1
+          fi
+          if [ ! -f "soulwave-linux-aarch64" ]; then
+            echo "ERROR: Missing standalone binary soulwave-linux-aarch64!" >&2
+            exit 1
+          fi
           if ! compgen -G "soulwave-${EXPECTED_VERSION}-py3-none-any.whl" > /dev/null; then
             echo "ERROR: Missing expected wheel soulwave-${EXPECTED_VERSION}-py3-none-any.whl!" >&2
             exit 1
