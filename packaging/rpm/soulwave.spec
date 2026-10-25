@@ -1,4 +1,4 @@
-%{!?version: %global version 0.1.4}
+%{!?version: %global version 0.1.5}
 Name:           soulwave
 Version:        %{version}
 Release:        %{?release}%{!?release:1}%{?dist}
@@ -69,6 +69,11 @@ PYTHONPATH=%{buildroot}%{_prefix}/lib/%{name}/vendor %{__python3} -m soulwave.cl
 %{_prefix}/lib/%{name}
 
 %changelog
+* Sun Oct 25 2026 Soulwave Contributors <support@soulwave.local> - 0.1.5-1
+- Binary-first universal installation: standalone single-file executables for x86_64 and aarch64
+- Self-healing virtualenv.pyz fallback for systems without python3-venv
+- Multi-arch automated release pipeline
+
 * Sun Oct 25 2026 Soulwave Contributors <support@soulwave.local> - 0.1.4-1
 - Fix unintended startup fallback to demo player when no player is running
 - Add dynamic player discovery loop and active playback prioritization

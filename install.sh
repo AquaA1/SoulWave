@@ -91,7 +91,7 @@ OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
     --rpm                Install native RPM package (Fedora, RHEL, CentOS)
     --wheel              Install via Python wheel into isolated virtual environment
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.4)
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.5)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)
@@ -579,10 +579,44 @@ install_wheel() {
         pip_opts+=("--no-deps")
     fi
 
+    # Helper to create virtualenv safely with virtualenv.pyz fallback if python3-venv is missing
+    create_virtualenv() {
+        local target_dir="$1"
+        local elevated="${2:-0}"
+
+        if [ "${elevated}" -eq 1 ]; then
+            if run_elevated python3 -m venv --system-site-packages "${target_dir}" 2>/dev/null; then
+                return 0
+            fi
+        else
+            if python3 -m venv --system-site-packages "${target_dir}" 2>/dev/null; then
+                return 0
+            fi
+        fi
+
+        log_warn "Standard 'python3-venv' / ensurepip is unavailable on this system."
+        log_info "Bootstrapping standalone virtual environment runner (virtualenv.pyz)..."
+        local venv_pyz
+        venv_pyz="$(mktemp -t virtualenv-XXXXXX.pyz)"
+        if fetch_file "https://bootstrap.pypa.io/virtualenv.pyz" "${venv_pyz}"; then
+            if [ "${elevated}" -eq 1 ]; then
+                run_elevated python3 "${venv_pyz}" --system-site-packages "${target_dir}"
+            else
+                python3 "${venv_pyz}" --system-site-packages "${target_dir}"
+            fi
+            rm -f "${venv_pyz}"
+            return 0
+        else
+            rm -f "${venv_pyz}"
+            log_error "Failed to create virtual environment using standard venv and fallback."
+            return 1
+        fi
+    }
+
     # Setup directories and isolated virtualenv
     if [ "${needs_sudo}" -eq 1 ]; then
         run_elevated mkdir -p "${install_dir}" "${bin_dir}"
-        run_elevated python3 -m venv --system-site-packages "${install_dir}"
+        create_virtualenv "${install_dir}" 1
         run_elevated "${install_dir}/bin/python3" -m pip install "${pip_opts[@]}" "${wheel_file}"
 
         local launcher_tmp
@@ -596,7 +630,7 @@ EOF
         rm -f "${launcher_tmp}"
     else
         mkdir -p "${install_dir}" "${bin_dir}"
-        python3 -m venv --system-site-packages "${install_dir}"
+        create_virtualenv "${install_dir}" 0
         "${install_dir}/bin/python3" -m pip install "${pip_opts[@]}" "${wheel_file}"
 
         cat <<EOF > "${bin_dir}/soulwave"
