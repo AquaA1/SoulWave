@@ -239,4 +239,5 @@ def test_companion_animations_more_visible_and_transition_settling():
     assert comp.in_track_transition is False
     comp.update_state(is_playing=True, is_paused=False, accent=(56, 189, 248))
     rendered_active = comp.render().plain
-    assert "Grooving with the beat" in rendered_active
+    assert "Pip" in rendered_active
+    assert "Grooving with the beat" not in rendered_active
