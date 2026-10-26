@@ -31,6 +31,15 @@ def check_installation() -> int:
         sys.stderr.write(f"ERROR: Missing runtime dependency: {e}\n")
         return 1
 
+    # 1b. Check MPRIS utility availability
+    try:
+        from soulwave.player.mpris import is_mpris_available, get_playerctl_install_hint
+        if not is_mpris_available():
+            hint = get_playerctl_install_hint()
+            print(f"ℹ Notice: 'playerctl' not detected. Live desktop music tracking will be inactive until installed ({hint}).")
+    except Exception:
+        pass
+
     # 2. Verify stylesheet package resource
     try:
         css_file = None

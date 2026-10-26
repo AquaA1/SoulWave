@@ -7,6 +7,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ...lyrics.parser import LRCParser, LyricLine
+from ...player.mpris import is_mpris_available, get_playerctl_install_hint
 from ...theme.dynamic import RGB
 from .companion_view import CompanionDanceView
 
@@ -183,8 +184,15 @@ class LyricsPanelView(Widget):
         if not self.lines and not self.plain_text:
             t.append("── LYRICS ──\n", style=Style(color="rgb(100, 116, 139)"))
             if self.is_waiting:
-                t.append("\n  🎧 Waiting for media playback...\n\n", style=Style(color="rgb(148, 163, 184)", bold=True))
-                t.append("  Start playing a song in Spotify, YouTube, or your media player", style=Style(color="rgb(100, 116, 139)"))
+                if not is_mpris_available():
+                    hint = get_playerctl_install_hint()
+                    t.append("\n  ⚠️ 'playerctl' utility not found\n\n", style=Style(color="rgb(245, 158, 11)", bold=True))
+                    t.append("  Soulwave needs 'playerctl' to track songs and fetch lyrics.\n", style=Style(color="rgb(203, 213, 225)"))
+                    t.append(f"  To install: {hint}\n\n", style=Style(color="rgb(56, 189, 248)", bold=True))
+                    t.append("  (Or press 'd' to switch to built-in demo tracks with synced lyrics!)", style=Style(color="rgb(148, 163, 184)"))
+                else:
+                    t.append("\n  🎧 Waiting for media playback...\n\n", style=Style(color="rgb(148, 163, 184)", bold=True))
+                    t.append("  Start playing a song in Spotify, YouTube, or your media player", style=Style(color="rgb(100, 116, 139)"))
             else:
                 t.append("\n  ♪ (No lyrics found for this track)", style=Style(color="rgb(100, 116, 139)"))
             return t

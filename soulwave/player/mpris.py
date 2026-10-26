@@ -41,6 +41,24 @@ except ImportError:
     GLib = None
 
 
+def is_mpris_available() -> bool:
+    """Return True if native D-Bus or playerctl is available on the system."""
+    return bool(_DBUS_AVAILABLE or shutil.which("playerctl"))
+
+
+def get_playerctl_install_hint() -> str:
+    """Return the distro-specific install command for playerctl."""
+    if shutil.which("apt"):
+        return "sudo apt install playerctl"
+    if shutil.which("dnf"):
+        return "sudo dnf install playerctl"
+    if shutil.which("pacman"):
+        return "sudo pacman -S playerctl"
+    if shutil.which("zypper"):
+        return "sudo zypper install playerctl"
+    return "sudo apt install playerctl"
+
+
 @dataclass
 class SeekVerificationResult:
     """Detailed record of a seek operation and its verification."""

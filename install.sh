@@ -91,7 +91,7 @@ OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
     --rpm                Install native RPM package (Fedora, RHEL, CentOS)
     --wheel              Install via Python wheel into isolated virtual environment
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.7)
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.8)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)
@@ -273,18 +273,44 @@ check_prerequisites() {
 
     if [ ${#missing_recommended[@]} -gt 0 ]; then
         log_warn "Recommended audio utilities not found: ${missing_recommended[*]}"
-        echo "    Soulwave runs without them (with built-in demo tracks / visualizer fallback),"
-        echo "    but installing them enables live MPRIS music tracking and real-time audio visualization."
+        echo "    Soulwave needs them to track live desktop music (playerctl) and audio visualizer (cava)."
+
+        local install_cmd=""
         if [ "${IS_RPM_DISTRO}" -eq 1 ]; then
-            echo -e "    ${BOLD}Install command:${RESET} sudo dnf install ${missing_recommended[*]}"
+            install_cmd="sudo dnf install -y ${missing_recommended[*]}"
         elif command -v apt >/dev/null 2>&1; then
-            echo -e "    ${BOLD}Install command:${RESET} sudo apt install ${missing_recommended[*]}"
+            install_cmd="sudo apt update -qq && sudo apt install -y ${missing_recommended[*]}"
         elif command -v pacman >/dev/null 2>&1; then
-            echo -e "    ${BOLD}Install command:${RESET} sudo pacman -S ${missing_recommended[*]}"
+            install_cmd="sudo pacman -S --noconfirm --needed ${missing_recommended[*]}"
         elif command -v zypper >/dev/null 2>&1; then
-            echo -e "    ${BOLD}Install command:${RESET} sudo zypper install ${missing_recommended[*]}"
+            install_cmd="sudo zypper install -y ${missing_recommended[*]}"
         fi
-        echo ""
+
+        local installed_deps=0
+        # Check if running interactively with a controlling terminal and sudo is available
+        if [ -c /dev/tty ] && [ -n "${install_cmd}" ] && command -v sudo >/dev/null 2>&1; then
+            printf "\n==> Would you like to install them now with sudo? [y/N]: "
+            local answer=""
+            read -r answer < /dev/tty || answer="n"
+            if [[ "${answer}" =~ ^[Yy]$ ]]; then
+                log_info "Running: ${install_cmd}"
+                if eval "${install_cmd} < /dev/tty"; then
+                    log_success "Successfully installed audio utilities (${missing_recommended[*]})!"
+                    installed_deps=1
+                else
+                    log_warn "Installation failed or was cancelled. Continuing with Soulwave installation..."
+                fi
+            fi
+        fi
+
+        if [ "${installed_deps}" -eq 0 ]; then
+            echo ""
+            echo "    No sudo permission given or install skipped."
+            echo "    You can install them yourself anytime and re-run:"
+            echo -e "      ${BOLD}${install_cmd:-sudo apt install ${missing_recommended[*]}}${RESET}"
+            echo "    (Soulwave will still install and work with built-in demo tracks!)"
+            echo ""
+        fi
     fi
 }
 
@@ -746,6 +772,24 @@ main() {
     echo -e "  For help and keybindings:        ${CYAN}soulwave --help${RESET}"
     echo -e "  To uninstall anytime:            ${YELLOW}install.sh --uninstall${RESET}"
     echo ""
+
+    if ! command -v playerctl >/dev/null 2>&1; then
+        local distro_cmd="sudo apt install playerctl"
+        if [ "${IS_RPM_DISTRO:-0}" -eq 1 ]; then
+            distro_cmd="sudo dnf install playerctl"
+        elif command -v pacman >/dev/null 2>&1; then
+            distro_cmd="sudo pacman -S playerctl"
+        elif command -v zypper >/dev/null 2>&1; then
+            distro_cmd="sudo zypper install playerctl"
+        fi
+        echo -e "${YELLOW}┌────────────────────────────────────────────────────────────────────────┐${RESET}"
+        echo -e "${YELLOW}│${RESET} ${BOLD}Notice:${RESET} 'playerctl' is not installed on your system.                  ${YELLOW}│${RESET}"
+        echo -e "${YELLOW}│${RESET} To enable live music tracking from Spotify, YouTube, or browser:        ${YELLOW}│${RESET}"
+        echo -e "${YELLOW}│${RESET}   ${CYAN}${distro_cmd}${RESET}"
+        echo -e "${YELLOW}│${RESET} (Or launch with ${GREEN}soulwave -d${RESET} to enjoy built-in demo tracks with lyrics!) ${YELLOW}│${RESET}"
+        echo -e "${YELLOW}└────────────────────────────────────────────────────────────────────────┘${RESET}"
+        echo ""
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]:-}" == "${0}" || -z "${BASH_SOURCE[0]:-}" ]]; then

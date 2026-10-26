@@ -781,6 +781,52 @@ def test_installer_health_check_catches_missing_resource(tmp_path):
     assert "Stylesheet file not found" in check_fail.stderr or "StylesheetError" in check_fail.stderr
 
 
+def test_playerctl_availability_and_distro_hints():
+    """Verify is_mpris_available and get_playerctl_install_hint behave as expected across distros."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from soulwave.player.mpris import is_mpris_available, get_playerctl_install_hint
+    import shutil
+
+    # get_playerctl_install_hint returns a valid string containing 'install playerctl'
+    hint = get_playerctl_install_hint()
+    assert "install" in hint
+    assert "playerctl" in hint
+
+    # When playerctl is mocked as missing and dbus is False, is_mpris_available returns False
+    from soulwave.player import mpris
+    orig_dbus = mpris._DBUS_AVAILABLE
+    orig_which = shutil.which
+    try:
+        mpris._DBUS_AVAILABLE = False
+        shutil.which = lambda cmd: None
+        assert is_mpris_available() is False
+
+        # In this state, hint suggests a valid command
+        mock_hint = get_playerctl_install_hint()
+        assert "sudo apt install playerctl" in mock_hint
+
+        # Verify UI views render the hint if textual is available in environment
+        try:
+            import textual
+            from soulwave.ui.widgets.now_playing import NowPlayingView
+            from soulwave.ui.widgets.lyrics_panel import LyricsPanelView
+            from soulwave.player.base import PlayerState, PlaybackStatus
+
+            np = NowPlayingView(PlayerState(status=PlaybackStatus.DISCONNECTED))
+            rendered_np = np.render()
+            assert "playerctl" in str(rendered_np)
+
+            lp = LyricsPanelView()
+            rendered_lp = lp.render()
+            assert "playerctl" in str(rendered_lp)
+        except ImportError:
+            pass
+    finally:
+        mpris._DBUS_AVAILABLE = orig_dbus
+        shutil.which = orig_which
+
+
 if __name__ == "__main__":
     import inspect
     import tempfile

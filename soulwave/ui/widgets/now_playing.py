@@ -7,6 +7,7 @@ from rich.text import Text
 from rich.style import Style
 
 from ...player.base import PlayerState, PlaybackStatus
+from ...player.mpris import is_mpris_available, get_playerctl_install_hint
 from ...theme.dynamic import RGB
 
 
@@ -69,8 +70,13 @@ class NowPlayingView(Widget):
 
         # Track title and metadata
         if is_disconnected or not self.state.metadata.title or self.state.metadata.title == "No Track Playing":
-            title = "Waiting for media playback..."
-            artist = "Start playing a track in Spotify, YouTube, or your media player"
+            if not is_mpris_available() and self.state.player_name != "Soulwave Demo":
+                hint = get_playerctl_install_hint()
+                title = "⚠️ 'playerctl' not found — media tracking inactive"
+                artist = f"Run: {hint} (or press 'd' for demo)"
+            else:
+                title = "Waiting for media playback..."
+                artist = "Start playing a track in Spotify, YouTube, or your media player"
             t.append(title, style=Style(color="rgb(255, 255, 255)", bold=True))
             t.append("\n")
             t.append(artist, style=dim_style)
