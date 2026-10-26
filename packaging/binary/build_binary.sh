@@ -51,6 +51,8 @@ pyinstaller \
     --collect-all soulwave \
     --collect-all textual \
     --collect-all rich \
+    --collect-all requests \
+    --collect-all syncedlyrics \
     "${SCRIPT_DIR}/entrypoint.py"
 
 OUTPUT_PATH="${DIST_DIR}/${OUTPUT_NAME}"

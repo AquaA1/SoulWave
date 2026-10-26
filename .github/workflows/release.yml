@@ -251,12 +251,16 @@ jobs:
               python -m pip install pyinstaller textual rich requests syncedlyrics
               python -m pip install .
               ./packaging/binary/build_binary.sh \"${{ matrix.arch }}\"
+              \"./dist/soulwave-linux-${{ matrix.arch }}\" --version
+              \"./dist/soulwave-linux-${{ matrix.arch }}\" --check
+              chmod -R a+rwx /workspace/dist /workspace/build 2>/dev/null || true
             "
 
-      - name: Smoke test built x86_64 binary
+      - name: Smoke test built x86_64 binary on runner host
         if: matrix.arch == 'x86_64'
         run: |
-          chmod +x "dist/soulwave-linux-x86_64"
+          sudo chmod +x "dist/soulwave-linux-x86_64" 2>/dev/null || chmod +x "dist/soulwave-linux-x86_64" || true
+          ls -la "dist/soulwave-linux-x86_64"
           ./dist/soulwave-linux-x86_64 --version
           ./dist/soulwave-linux-x86_64 --check
 
