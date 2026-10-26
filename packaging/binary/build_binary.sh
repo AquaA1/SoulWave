@@ -57,7 +57,7 @@ pyinstaller \
     --hidden-import soulwave.audio.cava_reader \
     --hidden-import soulwave.lyrics.client \
     --hidden-import soulwave.lyrics.cache \
-    "${REPO_ROOT}/soulwave/cli.py"
+    "${SCRIPT_DIR}/entrypoint.py"
 
 OUTPUT_PATH="${DIST_DIR}/${OUTPUT_NAME}"
 if [ ! -f "${OUTPUT_PATH}" ]; then

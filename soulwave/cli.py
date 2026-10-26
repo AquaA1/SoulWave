@@ -6,8 +6,16 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__
-from .config import Config
+if __package__ is None or __package__ == "":
+    # Executed directly as a script without package context
+    _parent = str(Path(__file__).resolve().parent.parent)
+    if _parent not in sys.path:
+        sys.path.insert(0, _parent)
+    from soulwave import __version__
+    from soulwave.config import Config
+else:
+    from . import __version__
+    from .config import Config
 
 
 def check_installation() -> int:
@@ -25,10 +33,31 @@ def check_installation() -> int:
 
     # 2. Verify stylesheet package resource
     try:
-        import importlib.resources as pkg_resources
-        css_file = Path(pkg_resources.files("soulwave.ui").joinpath("styles.tcss"))
-        if not css_file.is_file():
-            sys.stderr.write(f"ERROR: Stylesheet file not found at: {css_file}\n")
+        css_file = None
+        # Try importlib.resources first
+        try:
+            import importlib.resources as pkg_resources
+            candidate = Path(str(pkg_resources.files("soulwave.ui").joinpath("styles.tcss")))
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                css_file = candidate
+        except Exception:
+            pass
+
+        # Try relative to module file or sys._MEIPASS (PyInstaller frozen bundle)
+        if css_file is None:
+            meipass = getattr(sys, "_MEIPASS", None)
+            search_paths = [
+                Path(__file__).resolve().parent / "ui" / "styles.tcss",
+            ]
+            if meipass:
+                search_paths.append(Path(meipass) / "soulwave" / "ui" / "styles.tcss")
+            for sp in search_paths:
+                if sp.is_file() and sp.stat().st_size > 0:
+                    css_file = sp
+                    break
+
+        if css_file is None or not css_file.is_file():
+            sys.stderr.write("ERROR: Stylesheet file styles.tcss not found\n")
             return 1
         if css_file.stat().st_size == 0:
             sys.stderr.write(f"ERROR: Stylesheet file is empty at: {css_file}\n")
@@ -40,7 +69,10 @@ def check_installation() -> int:
     # 3. Verify Textual UI instantiation and headless mount
     try:
         import asyncio
-        from .ui.app import SoulwaveApp
+        if __package__ is None or __package__ == "":
+            from soulwave.ui.app import SoulwaveApp
+        else:
+            from .ui.app import SoulwaveApp
 
         async def _test_mount():
             cfg = Config(theme="night", fps=15)
@@ -128,7 +160,10 @@ def main() -> None:
     if args.no_vis:
         config.show_visualizer = False
 
-    from .ui.app import SoulwaveApp
+    if __package__ is None or __package__ == "":
+        from soulwave.ui.app import SoulwaveApp
+    else:
+        from .ui.app import SoulwaveApp
 
     app = SoulwaveApp(
         config=config,

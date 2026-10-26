@@ -253,6 +253,13 @@ jobs:
               ./packaging/binary/build_binary.sh \"${{ matrix.arch }}\"
             "
 
+      - name: Smoke test built x86_64 binary
+        if: matrix.arch == 'x86_64'
+        run: |
+          chmod +x "dist/soulwave-linux-x86_64"
+          ./dist/soulwave-linux-x86_64 --version
+          ./dist/soulwave-linux-x86_64 --check
+
       - name: Upload Standalone Binary artifact
         uses: actions/upload-artifact@v4
         with:

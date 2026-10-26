@@ -56,7 +56,7 @@ hiddenimports = textual_hiddenimports + rich_hiddenimports + [
 block_cipher = None
 
 a = Analysis(
-    [str(REPO_ROOT / "soulwave" / "cli.py")],
+    [str(SPEC_DIR / "entrypoint.py")],
     pathex=[str(REPO_ROOT)],
     binaries=binaries,
     datas=datas,

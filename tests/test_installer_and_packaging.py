@@ -29,6 +29,8 @@ INSTALL_SH = REPO_ROOT / "install.sh"
 RPM_SPEC = REPO_ROOT / "packaging" / "rpm" / "soulwave.spec"
 BINARY_SPEC = REPO_ROOT / "packaging" / "binary" / "soulwave.spec"
 BUILD_BINARY_SH = REPO_ROOT / "packaging" / "binary" / "build_binary.sh"
+ENTRYPOINT_PY = REPO_ROOT / "packaging" / "binary" / "entrypoint.py"
+SOULWAVE_MAIN_PY = REPO_ROOT / "soulwave" / "__main__.py"
 RELEASE_YML = REPO_ROOT / ".github" / "workflows" / "release.yml"
 DIST_DIR = REPO_ROOT / "dist"
 VENDOR_WHEELS_DIR = REPO_ROOT / "packaging" / "rpm" / "vendor_wheels"
@@ -106,18 +108,81 @@ def test_install_script_help():
 
 
 def test_pyinstaller_spec_and_build_script():
-    """Verify PyInstaller spec file and build script exist, include styles.tcss, and are valid."""
+    """Verify PyInstaller spec file, entrypoint, and build script exist, include styles.tcss, and are valid."""
     assert BINARY_SPEC.is_file(), f"Binary spec {BINARY_SPEC} must exist"
     spec_content = BINARY_SPEC.read_text(encoding="utf-8")
     assert "styles.tcss" in spec_content, "soulwave.spec must bundle styles.tcss"
     assert "soulwave.cli" in spec_content, "soulwave.spec must include soulwave.cli entry point"
     assert "textual" in spec_content, "soulwave.spec must collect textual"
+    assert "entrypoint.py" in spec_content, "soulwave.spec must target entrypoint.py"
+
+    assert ENTRYPOINT_PY.is_file(), f"Binary entrypoint {ENTRYPOINT_PY} must exist"
+    assert os.access(ENTRYPOINT_PY, os.X_OK), "entrypoint.py must be executable"
+    entrypoint_content = ENTRYPOINT_PY.read_text(encoding="utf-8")
+    assert "from soulwave.cli import main" in entrypoint_content
+
+    assert SOULWAVE_MAIN_PY.is_file(), f"soulwave/__main__.py must exist at {SOULWAVE_MAIN_PY}"
 
     assert BUILD_BINARY_SH.is_file(), f"Build binary script {BUILD_BINARY_SH} must exist"
     assert os.access(BUILD_BINARY_SH, os.X_OK), "build_binary.sh must be executable"
     build_sh_content = BUILD_BINARY_SH.read_text(encoding="utf-8")
     assert "pyinstaller" in build_sh_content
     assert "soulwave-linux-" in build_sh_content
+    assert "entrypoint.py" in build_sh_content
+
+
+def test_direct_script_and_entrypoint_execution():
+    """Verify cli.py, entrypoint.py, and -m soulwave execute without 'attempted relative import' error."""
+    # 1. python3 packaging/binary/entrypoint.py --version
+    res_entry = subprocess.run(
+        [sys.executable, str(ENTRYPOINT_PY), "--version"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert res_entry.returncode == 0, f"entrypoint.py failed: {res_entry.stderr}"
+    assert "Soulwave v" in res_entry.stdout
+    assert "ImportError: attempted relative import" not in res_entry.stderr
+
+    # 2. python3 soulwave/cli.py --version (must not fail even when run directly without -m)
+    res_cli = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "soulwave" / "cli.py"), "--version"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert res_cli.returncode == 0, f"soulwave/cli.py direct execution failed: {res_cli.stderr}"
+    assert "Soulwave v" in res_cli.stdout
+    assert "ImportError: attempted relative import" not in res_cli.stderr
+
+    # 3. python3 -m soulwave --version
+    res_mod = subprocess.run(
+        [sys.executable, "-m", "soulwave", "--version"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert res_mod.returncode == 0, f"python -m soulwave failed: {res_mod.stderr}"
+    assert "Soulwave v" in res_mod.stdout
+
+
+def test_install_script_rejects_non_linux_os():
+    """Verify install.sh detects and cleanly rejects non-Linux kernels (e.g. Darwin/macOS)."""
+    mock_non_linux = """
+    target="$1"
+    set --
+    uname() { echo "Darwin"; }
+    source "${target}"
+    detect_os
+    """
+    res = subprocess.run(
+        ["bash", "-c", mock_non_linux, "_", str(INSTALL_SH)],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode != 0
+    assert "Soulwave standalone installer currently targets Linux" in res.stderr
+
 
 
 def test_install_script_user_binary_and_uninstall(tmp_path):

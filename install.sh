@@ -91,7 +91,7 @@ OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
     --rpm                Install native RPM package (Fedora, RHEL, CentOS)
     --wheel              Install via Python wheel into isolated virtual environment
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.5)
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.6)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)
@@ -206,6 +206,14 @@ detect_os() {
     OS_ID="unknown"
     OS_LIKE=""
     IS_RPM_DISTRO=0
+
+    local kernel_name
+    kernel_name="$(uname -s 2>/dev/null || echo "unknown")"
+    if [ "${kernel_name}" != "Linux" ]; then
+        log_error "Soulwave standalone installer currently targets Linux (detected: ${kernel_name})."
+        echo "    To install on other platforms, use pip in a Python environment: pip install soulwave"
+        exit 1
+    fi
 
     if [ -f /etc/os-release ]; then
         # shellcheck disable=SC1091
@@ -377,8 +385,10 @@ fetch_release_assets() {
     fi
 
     TAG_NAME="$(head -n 1 "${parsed_result}")"
-    if [ -z "${TAG_NAME}" ]; then
-        log_error "Invalid or empty release tag returned from GitHub API."
+    if [ -z "${TAG_NAME}" ] || [[ "${TAG_NAME}" == *"API rate limit"* ]] || [[ "${TAG_NAME}" == *"Not Found"* ]] || [[ "${TAG_NAME}" == *"message"* ]]; then
+        log_error "Could not retrieve release metadata from GitHub API (response: '${TAG_NAME:-empty}')."
+        echo "    GitHub may be temporarily unreachable or rate-limited."
+        echo "    You can browse and download releases at: https://github.com/${REPO}/releases"
         exit 1
     fi
     log_info "Found release: ${BOLD}${TAG_NAME}${RESET}"
