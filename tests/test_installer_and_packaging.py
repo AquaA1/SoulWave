@@ -818,7 +818,7 @@ def test_playerctl_availability_and_distro_hints():
             assert "playerctl" in str(rendered_np)
 
             lp = LyricsPanelView()
-            lp.set_waiting(True)
+            lp.is_waiting = True
             rendered_lp = lp.render()
             assert "playerctl" in str(rendered_lp)
         except ImportError:
