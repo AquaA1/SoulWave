@@ -91,7 +91,7 @@ OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
     --rpm                Install native RPM package (Fedora, RHEL, CentOS)
     --wheel              Install via Python wheel into isolated virtual environment
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.6)
+    --version, -v <tag>  Install specific release tag (e.g. v0.1.7)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)

@@ -46,17 +46,11 @@ pyinstaller \
     --distpath "${DIST_DIR}" \
     --workpath "${BUILD_DIR}" \
     --specpath "${SCRIPT_DIR}" \
+    --paths "${REPO_ROOT}" \
     --add-data "${REPO_ROOT}/soulwave/ui/styles.tcss:soulwave/ui" \
+    --collect-all soulwave \
     --collect-all textual \
     --collect-all rich \
-    --hidden-import soulwave.cli \
-    --hidden-import soulwave.config \
-    --hidden-import soulwave.ui.app \
-    --hidden-import soulwave.player.mpris \
-    --hidden-import soulwave.player.mock_player \
-    --hidden-import soulwave.audio.cava_reader \
-    --hidden-import soulwave.lyrics.client \
-    --hidden-import soulwave.lyrics.cache \
     "${SCRIPT_DIR}/entrypoint.py"
 
 OUTPUT_PATH="${DIST_DIR}/${OUTPUT_NAME}"

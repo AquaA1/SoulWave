@@ -249,7 +249,7 @@ jobs:
               apt-get update && apt-get install -y binutils
               python -m pip install --upgrade pip
               python -m pip install pyinstaller textual rich requests syncedlyrics
-              python -m pip install -e .
+              python -m pip install .
               ./packaging/binary/build_binary.sh \"${{ matrix.arch }}\"
             "
 
