@@ -291,12 +291,14 @@ class SoulwaveApp(App):
         elif track_key in self._known_durations:
             # Restore duration from track duration cache if MPRIS is temporarily buffering/missing
             meta.duration_seconds = self._known_durations[track_key]
+            state.can_seek = True
         elif (
             self._last_state.metadata.duration_seconds > 0.0
             and track_key == self.current_track_key
         ):
             # Same track, keep known duration
             meta.duration_seconds = self._last_state.metadata.duration_seconds
+            state.can_seek = True
 
         self._last_state = state
 

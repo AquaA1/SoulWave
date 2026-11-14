@@ -1,4 +1,4 @@
-%{!?version: %global version 0.1.8}
+%{!?version: %global version 0.1.9}
 Name:           soulwave
 Version:        %{version}
 Release:        %{?release}%{!?release:1}%{?dist}

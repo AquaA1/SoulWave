@@ -194,8 +194,11 @@ class MPRISPlayer(BasePlayer):
         playerctl_bin = shutil.which("playerctl")
         if playerctl_bin:
             try:
+                pname = player_name
+                if pname.startswith("org.mpris.MediaPlayer2."):
+                    pname = pname[len("org.mpris.MediaPlayer2."):]
                 res = subprocess.run(
-                    [playerctl_bin, "-p", player_name, "status"],
+                    [playerctl_bin, "-p", pname, "status"],
                     capture_output=True,
                     text=True,
                     timeout=0.6,
@@ -338,7 +341,7 @@ class MPRISPlayer(BasePlayer):
                     try:
                         obj_path = dbus.ObjectPath(str(track_id))
                         self._player_iface.SetPosition(obj_path, dbus.Int64(pos_us))
-                    except dbus.DBusException as e:
+                    except (dbus.DBusException, ValueError) as e:
                         err = str(e)
                         self._handle_dbus_error(e)
 
@@ -767,19 +770,36 @@ class MPRISPlayer(BasePlayer):
         except ValueError:
             duration_sec = 0.0
 
-        try:
-            position_sec = max(0.0, float(position_str) / 1_000_000.0) if position_str else 0.0
-        except ValueError:
-            position_sec = 0.0
+        position_sec = 0.0
+        if position_str:
+            try:
+                raw_pos = float(position_str)
+                if raw_pos > 10_000_000:
+                    position_sec = max(0.0, raw_pos / 1_000_000.0)
+                elif raw_pos > 10_000:
+                    position_sec = max(0.0, raw_pos / 1_000.0)
+                else:
+                    position_sec = max(0.0, raw_pos)
+            except ValueError:
+                position_sec = 0.0
+
+        status = self._parse_status(status_str)
+        loop = self._parse_loop(loop_str)
+        shuffle = self._parse_shuffle(shuffle_str)
+
+        # Fallback to direct `playerctl position` if position from metadata is 0.0 or missing
+        if position_sec == 0.0 and status in (PlaybackStatus.PLAYING, PlaybackStatus.PAUSED):
+            direct_pos = self._run_cmd(["position"], timeout=0.6)
+            if direct_pos:
+                try:
+                    position_sec = max(0.0, float(direct_pos))
+                except ValueError:
+                    pass
 
         try:
             volume_val = max(0.0, min(1.0, float(volume_str))) if volume_str else 1.0
         except ValueError:
             volume_val = 1.0
-
-        status = self._parse_status(status_str)
-        loop = self._parse_loop(loop_str)
-        shuffle = self._parse_shuffle(shuffle_str)
 
         is_new_track = (
             (track_id_str and self._last_state.metadata.track_id and track_id_str != self._last_state.metadata.track_id)
@@ -823,7 +843,7 @@ class MPRISPlayer(BasePlayer):
             loop=loop,
             shuffle=shuffle,
             can_control=True,
-            can_seek=duration_sec > 0,
+            can_seek=True,
             can_go_next=True,
             can_go_previous=True,
         )
@@ -870,9 +890,12 @@ class MPRISPlayer(BasePlayer):
         if self.use_dbus and self._running:
             self._cmd_queue.put(("seek", (offset_us, desired, seq, self._track_epoch)))
         else:
-            # playerctl fallback
-            sign = "+" if offset_seconds >= 0 else ""
-            self._run_cmd(["position", f"{offset_seconds:.1f}{sign}"])
+            # playerctl fallback: OFFSET must end in + or - (e.g. 5.0+ or 5.0-)
+            if offset_seconds >= 0:
+                arg = f"{offset_seconds:.1f}+"
+            else:
+                arg = f"{abs(offset_seconds):.1f}-"
+            self._run_cmd(["position", arg])
 
     def set_position(self, target_seconds: float) -> None:
         """Absolute seek: validates track identity, updates UI and queues SetPosition."""
@@ -883,7 +906,7 @@ class MPRISPlayer(BasePlayer):
 
         with self._lock:
             track_id = self._last_state.metadata.track_id
-            if not track_id:
+            if self.use_dbus and not track_id:
                 logger.info("SetPosition rejected: No track_id available")
                 return
 
@@ -897,7 +920,7 @@ class MPRISPlayer(BasePlayer):
 
         pos_us = int(round(clamped * 1_000_000.0))
 
-        if self.use_dbus and self._running:
+        if self.use_dbus and self._running and track_id and str(track_id).startswith("/"):
             self._cmd_queue.put(("set_position", (track_id, pos_us, clamped, seq, self._track_epoch)))
         else:
             self._run_cmd(["position", f"{clamped:.1f}"])
@@ -1029,7 +1052,10 @@ class MPRISPlayer(BasePlayer):
             return None
         cmd = [self._playerctl_bin]
         if self.player_name:
-            cmd.extend(["-p", self.player_name])
+            pname = self.player_name
+            if pname.startswith("org.mpris.MediaPlayer2."):
+                pname = pname[len("org.mpris.MediaPlayer2."):]
+            cmd.extend(["-p", pname])
         cmd.extend(args)
 
         try:

@@ -53,18 +53,26 @@ class ProgressBarView(Widget):
 
     @staticmethod
     def _format_time(seconds: float) -> str:
-        mins = int(seconds) // 60
-        secs = int(seconds) % 60
+        s = max(0, int(seconds))
+        hours = s // 3600
+        mins = (s % 3600) // 60
+        secs = s % 60
+        if hours > 0:
+            return f"{hours:02d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
     def _calc_target_from_x(self, x: int) -> Optional[float]:
         if self.duration <= 0.0:
             return None
 
-        pos_str_len = 6  # "00:00 "
+        pos_str = self._format_time(self.position)
+        dur_str = self._format_time(self.duration)
+        prefix_len = len(pos_str) + 1  # e.g. "00:00 "
+        suffix_len = len(dur_str) + 1  # e.g. " 03:45"
+
         width = self.size.width if self.size.width > 0 else 50
-        bar_len = max(10, width - 12 - 2)
-        click_x = x - pos_str_len
+        bar_len = max(10, width - prefix_len - suffix_len - 2)
+        click_x = x - prefix_len
 
         ratio = max(0.0, min(1.0, click_x / float(bar_len)))
         return ratio * self.duration
@@ -89,22 +97,33 @@ class ProgressBarView(Widget):
 
         t.append(prefix, style=Style(color="rgb(148, 163, 184)"))
 
-        ratio = 0.0 if self.duration <= 0.0 else min(1.0, display_pos / self.duration)
-        filled_len = int(round(ratio * bar_len))
-        empty_len = max(0, bar_len - filled_len)
-
         fill_col = f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})"
         empty_col = "rgb(51, 65, 85)"
         thumb_col = "rgb(255, 255, 255)"
 
-        if filled_len > 0:
-            t.append("━" * (filled_len - 1), style=Style(color=fill_col))
-            t.append("●", style=Style(color=thumb_col, bold=True))
+        if self.duration <= 0.0:
+            # Unknown duration / live stream
+            if display_pos > 0.0:
+                pulse_idx = int(display_pos * 2.5) % bar_len
+                t.append("─" * pulse_idx, style=Style(color=empty_col))
+                t.append("●", style=Style(color=fill_col, bold=True))
+                t.append("─" * max(0, bar_len - pulse_idx - 1), style=Style(color=empty_col))
+            else:
+                t.append("○", style=Style(color=fill_col))
+                t.append("─" * (bar_len - 1), style=Style(color=empty_col))
         else:
-            t.append("○", style=Style(color=fill_col))
+            ratio = min(1.0, max(0.0, display_pos / self.duration))
+            filled_len = int(round(ratio * bar_len))
+            empty_len = max(0, bar_len - filled_len)
 
-        if empty_len > 0:
-            t.append("─" * empty_len, style=Style(color=empty_col))
+            if filled_len > 0:
+                t.append("━" * (filled_len - 1), style=Style(color=fill_col))
+                t.append("●", style=Style(color=thumb_col, bold=True))
+            else:
+                t.append("○", style=Style(color=fill_col))
+
+            if empty_len > 0:
+                t.append("─" * empty_len, style=Style(color=empty_col))
 
         t.append(suffix, style=Style(color="rgb(148, 163, 184)"))
         return t
