@@ -778,7 +778,7 @@ def test_installer_health_check_catches_missing_resource(tmp_path):
     # Health check directly must now FAIL with non-zero exit code
     check_fail = subprocess.run([str(launcher), "--check"], capture_output=True, text=True, env=env, cwd=str(tmp_path))
     assert check_fail.returncode != 0
-    assert "Stylesheet file not found" in check_fail.stderr or "StylesheetError" in check_fail.stderr
+    assert ("Stylesheet file" in check_fail.stderr and "not found" in check_fail.stderr) or "StylesheetError" in check_fail.stderr
 
 
 def test_playerctl_availability_and_distro_hints():
@@ -826,6 +826,398 @@ def test_playerctl_availability_and_distro_hints():
     finally:
         mpris._DBUS_AVAILABLE = orig_dbus
         shutil.which = orig_which
+
+
+def _make_mock_binary(tmp_path: Path) -> Path:
+    mock_bin = tmp_path / "soulwave-linux-x86_64"
+    mock_bin.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--check\" ]; then\n"
+        "    echo 'Post-installation health check passed.'\n"
+        "    exit 0\n"
+        "fi\n"
+        "echo 'Soulwave standalone binary'\n"
+    )
+    mock_bin.chmod(0o755)
+    return mock_bin
+
+
+def _create_mock_sudo(tmp_path: Path, log_file: Path, exit_code: int = 0, create_target: Path = None) -> Path:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    sudo_script = bin_dir / "sudo"
+    create_stmt = f'touch "{create_target}"' if create_target else ""
+    sudo_script.write_text(
+        f"#!/bin/sh\n"
+        f"echo \"$*\" >> \"{log_file}\"\n"
+        f"{create_stmt}\n"
+        f"exit {exit_code}\n"
+    )
+    sudo_script.chmod(0o755)
+    return bin_dir
+
+
+def test_installer_menu_displayed_when_playerctl_missing(tmp_path):
+    """Verify that when playerctl is missing, installer shows the warning and 2-option menu."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    # Feed '2\n' so it exits cleanly after rendering the menu
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="2\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "WARNING: Recommended audio utility not found: playerctl" in res.stdout
+    assert "SoulWave needs playerctl to track live music" in res.stdout
+    assert "How would you like to proceed?" in res.stdout
+    assert "[1] (Recommended) Install playerctl automatically using sudo" in res.stdout
+    assert "[2] Exit and install playerctl manually" in res.stdout
+    assert "Select an option [1-2] (default: 1):" in res.stdout
+
+
+def test_installer_option_1_invokes_correct_package_manager_command(tmp_path):
+    """Verify that Option 1 invokes the exact distro-specific install command using sudo."""
+    expected_commands = {
+        "apt": "apt install -y playerctl",
+        "dnf": "dnf install -y playerctl",
+        "pacman": "pacman -S --noconfirm playerctl",
+        "zypper": "zypper install -y playerctl",
+    }
+
+    mock_bin = _make_mock_binary(tmp_path)
+
+    for pkg_mgr, expected_cmd in expected_commands.items():
+        sub_tmp = tmp_path / pkg_mgr
+        sub_tmp.mkdir()
+        fake_home = sub_tmp / "home"
+        fake_home.mkdir()
+        mock_playerctl = sub_tmp / "mock_playerctl"
+        sudo_log = sub_tmp / "sudo.log"
+        mock_bin_dir = _create_mock_sudo(sub_tmp, sudo_log, exit_code=0, create_target=mock_playerctl)
+
+        env = os.environ.copy()
+        env["HOME"] = str(fake_home)
+        env["PATH"] = f"{mock_bin_dir}:{env['PATH']}"
+        env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+        env["SOULWAVE_TEST_PKG_MGR"] = pkg_mgr
+        env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+        env["SOULWAVE_READ_STDIN"] = "1"
+
+        res = subprocess.run(
+            [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+            input="1\n",
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert res.returncode == 0, f"Failed for {pkg_mgr}: {res.stderr}\n{res.stdout}"
+        assert f"Installing playerctl using: sudo {expected_cmd}" in res.stdout
+        assert "Successfully installed and verified playerctl!" in res.stdout
+        assert "Soulwave installed successfully!" in res.stdout
+
+        # Verify sudo log recorded exact invocation
+        assert sudo_log.exists(), f"sudo was not called for {pkg_mgr}"
+        log_content = sudo_log.read_text().strip()
+        assert expected_cmd in log_content, f"Expected '{expected_cmd}' in sudo call, got: {log_content}"
+
+
+def test_installer_option_1_verifies_dependency_before_continuing(tmp_path):
+    """Verify that if sudo succeeds but playerctl is still not verified, installer aborts."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"  # Will NOT be created
+    sudo_log = tmp_path / "sudo.log"
+    mock_bin_dir = _create_mock_sudo(tmp_path, sudo_log, exit_code=0, create_target=None)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{mock_bin_dir}:{env['PATH']}"
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="1\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode != 0
+    assert "Installation command completed, but 'playerctl' was not found in PATH" in (res.stdout + res.stderr)
+
+    # SoulWave should NOT be installed
+    installed_launcher = fake_home / ".local" / "bin" / "soulwave"
+    assert not installed_launcher.exists()
+
+
+def test_installer_option_2_prints_distro_specific_manual_command(tmp_path):
+    """Verify that Option 2 prints the correct distro-specific manual install command."""
+    expected_manual_commands = {
+        "apt": "sudo apt install playerctl",
+        "dnf": "sudo dnf install playerctl",
+        "pacman": "sudo pacman -S playerctl",
+        "zypper": "sudo zypper install playerctl",
+    }
+
+    mock_bin = _make_mock_binary(tmp_path)
+
+    for pkg_mgr, expected_cmd in expected_manual_commands.items():
+        sub_tmp = tmp_path / pkg_mgr
+        sub_tmp.mkdir()
+        fake_home = sub_tmp / "home"
+        fake_home.mkdir()
+        mock_playerctl = sub_tmp / "mock_playerctl"
+
+        env = os.environ.copy()
+        env["HOME"] = str(fake_home)
+        env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+        env["SOULWAVE_TEST_PKG_MGR"] = pkg_mgr
+        env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+        env["SOULWAVE_READ_STDIN"] = "1"
+
+        res = subprocess.run(
+            [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+            input="2\n",
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert res.returncode == 0
+        assert "Manual Installation Instructions" in res.stdout
+        assert expected_cmd in res.stdout, f"Expected '{expected_cmd}' in output for {pkg_mgr}:\n{res.stdout}"
+
+
+def test_installer_option_2_prints_rerun_command(tmp_path):
+    """Verify that Option 2 prints the exact curl rerun command."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="2\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash" in res.stdout
+
+
+def test_installer_option_2_exits_zero_without_installing(tmp_path):
+    """Verify that Option 2 exits cleanly (code 0) without installing SoulWave or leaving files."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "pacman"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="2\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "Exiting installer." in res.stdout
+    # Verify no files installed
+    assert not (fake_home / ".local" / "bin" / "soulwave").exists()
+    assert not (fake_home / ".local" / "share" / "soulwave").exists()
+
+
+def test_installer_invalid_input_prompts_again(tmp_path):
+    """Verify that invalid inputs display an error and reprompt until valid choice is provided."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    # Provide two invalid options ('invalid', '3'), then '2'
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="invalid\n3\n2\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "Invalid selection: 'invalid'. Please enter 1 or 2." in res.stdout
+    assert "Invalid selection: '3'. Please enter 1 or 2." in res.stdout
+    assert "Manual Installation Instructions" in res.stdout
+
+
+def test_installer_empty_input_selects_option_1(tmp_path):
+    """Verify that pressing Enter (empty input) defaults to Option 1 and installs playerctl."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+    sudo_log = tmp_path / "sudo.log"
+    mock_bin_dir = _create_mock_sudo(tmp_path, sudo_log, exit_code=0, create_target=mock_playerctl)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{mock_bin_dir}:{env['PATH']}"
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="\n",  # Empty string defaults to 1
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0, f"Installer failed: {res.stderr}\n{res.stdout}"
+    assert sudo_log.exists()
+    assert "apt install -y playerctl" in sudo_log.read_text()
+    assert "Soulwave installed successfully!" in res.stdout
+
+
+def test_installer_unsupported_package_manager_handled_safely(tmp_path):
+    """Verify that unknown/unsupported package managers display manual advice and exit cleanly without sudo."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+    sudo_log = tmp_path / "sudo.log"
+    mock_bin_dir = _create_mock_sudo(tmp_path, sudo_log, exit_code=0, create_target=None)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{mock_bin_dir}:{env['PATH']}"
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "unknown"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 1
+    assert "Automatic installation is unavailable because no supported package manager was detected." in res.stdout
+    assert "Please install 'playerctl' manually through your distribution's package manager" in res.stdout
+    assert not sudo_log.exists(), "sudo must never be invoked for unsupported package managers"
+    assert not (fake_home / ".local" / "bin" / "soulwave").exists()
+
+
+def test_installer_non_interactive_execution_does_not_hang(tmp_path):
+    """Verify non-interactive / headless execution exits with error and does not hang; --no-deps bypasses."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_NONINTERACTIVE"] = "1"
+
+    # 1. Non-interactive without --no-deps should exit 1 immediately without hanging
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert res.returncode == 1
+    assert "Interactive terminal not available for dependency installation." in (res.stdout + res.stderr)
+    assert "sudo apt install playerctl" in res.stdout
+    assert "--no-deps" in res.stdout
+
+    # 2. Non-interactive WITH --no-deps should bypass dependency check and install successfully
+    res_nodeps = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user", "--no-deps"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=5,
+    )
+    assert res_nodeps.returncode == 0
+    assert "Skipping dependency installation (--no-deps specified)." in res_nodeps.stdout
+    assert "Soulwave installed successfully!" in res_nodeps.stdout
+    assert (fake_home / ".local" / "bin" / "soulwave").is_file()
+
+
+def test_installer_failed_dependency_installation_stops(tmp_path):
+    """Verify that when the package manager sudo command fails, the installer aborts with clear diagnostics."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+    sudo_log = tmp_path / "sudo.log"
+    # Sudo exits with error 1
+    mock_bin_dir = _create_mock_sudo(tmp_path, sudo_log, exit_code=1, create_target=None)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["PATH"] = f"{mock_bin_dir}:{env['PATH']}"
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="1\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 1
+    assert "Failed to install playerctl" in (res.stdout + res.stderr)
+    assert "Sudo authentication failed or permission was denied" in res.stdout
+    assert "package manager process is currently running and holding the lock" in res.stdout
+    assert "Repository mirrors or network connections are unreachable" in res.stdout
+    assert "sudo apt install playerctl" in res.stdout
+
+    # Verify SoulWave was NOT installed
+    assert not (fake_home / ".local" / "bin" / "soulwave").exists()
 
 
 if __name__ == "__main__":

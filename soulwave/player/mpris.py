@@ -131,16 +131,43 @@ class MPRISPlayer(BasePlayer):
         # Track generation / epoch tracking
         self._track_epoch: int = 0
 
+        # Background state poller and sequence tracking
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_wake_event = threading.Event()
+        self._poll_interval = 0.6
+        self._state_seq: int = 0
+        self._initialized: bool = False
+
         if self.use_dbus:
-            self._init_dbus()
+            if not self._init_dbus():
+                self.use_dbus = False
+
+        if not self.use_dbus and self._playerctl_bin:
+            self._running = True
+            self._poll_thread = threading.Thread(
+                target=self._playerctl_poll_loop,
+                daemon=True,
+                name="MPRIS-PlayerctlPoll",
+            )
+            self._poll_thread.start()
 
         # Initial state fetch
         self.get_state()
 
+    _cached_players: List[str] = []
+    _cached_players_time: float = 0.0
+    _players_lock = threading.Lock()
+
     @classmethod
-    def list_players(cls) -> List[str]:
+    def list_players(cls, force: bool = False) -> List[str]:
         """List names of currently active MPRIS players."""
+        with cls._players_lock:
+            now = time.monotonic()
+            if not force and (now - cls._cached_players_time) < 1.0:
+                return list(cls._cached_players)
+
         # 1. Try direct D-Bus ListNames
+        players = []
         if _DBUS_AVAILABLE:
             try:
                 bus = dbus.SessionBus()
@@ -153,28 +180,31 @@ class MPRISPlayer(BasePlayer):
                     for n in names
                     if str(n).startswith(prefix) and not str(n).endswith(".playerctld")
                 ]
-                if players:
-                    return players
             except Exception as e:
                 logger.debug("D-Bus ListNames failed: %s", e)
 
         # 2. Fallback to playerctl -l
-        playerctl_bin = shutil.which("playerctl")
-        if playerctl_bin:
-            try:
-                res = subprocess.run(
-                    [playerctl_bin, "-l"],
-                    capture_output=True,
-                    text=True,
-                    timeout=1.0,
-                    check=False,
-                )
-                if res.returncode == 0:
-                    players = [p.strip() for p in res.stdout.splitlines() if p.strip()]
-                    return players
-            except (subprocess.SubprocessError, OSError):
-                pass
-        return []
+        if not players:
+            playerctl_bin = shutil.which("playerctl")
+            if playerctl_bin:
+                try:
+                    res = subprocess.run(
+                        [playerctl_bin, "-l"],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                        check=False,
+                    )
+                    if res.returncode == 0:
+                        players = [p.strip() for p in res.stdout.splitlines() if p.strip()]
+                except (subprocess.SubprocessError, OSError):
+                    pass
+
+        with cls._players_lock:
+            cls._cached_players = players
+            cls._cached_players_time = time.monotonic()
+
+        return players
 
     @classmethod
     def probe_player_status(cls, player_name: str) -> PlaybackStatus:
@@ -668,58 +698,93 @@ class MPRISPlayer(BasePlayer):
 
     # --- State and Control Methods ---
 
-    def get_state(self) -> PlayerState:
-        """Fetch current player state from D-Bus or playerctl fallback."""
-        if self.use_dbus and self._props_iface:
+    def _fetch_dbus_properties_sync(self) -> None:
+        """Fetch all D-Bus properties once upon initialization or reconnection."""
+        if not (self.use_dbus and self._props_iface):
+            return
+        try:
             try:
-                # Fetch all properties
-                try:
-                    all_props = self._props_iface.GetAll("org.mpris.MediaPlayer2.Player")
-                    props_dict = dict(all_props)
-                    # Many MPRIS players omit Position from GetAll or return 0 to prevent bus traffic; ensure Position is queried
-                    if "Position" not in props_dict or props_dict.get("Position") == 0:
-                        try:
-                            pos_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
-                            if pos_val is not None:
-                                props_dict["Position"] = pos_val
-                        except Exception:
-                            pass
-                    with self._lock:
-                        self._apply_dbus_properties(props_dict)
-                except dbus.DBusException:
-                    # Fallback to individual property gets
-                    with self._lock:
-                        status_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
-                        self._last_state.status = self._parse_status(str(status_val))
-                        meta_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Metadata")
+                all_props = self._props_iface.GetAll("org.mpris.MediaPlayer2.Player")
+                props_dict = dict(all_props)
+                if "Position" not in props_dict or props_dict.get("Position") == 0:
+                    try:
                         pos_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
-                        self._apply_dbus_properties({"Metadata": meta_val, "Position": pos_val})
-
-                # Refresh position interpolation
+                        if pos_val is not None:
+                            props_dict["Position"] = pos_val
+                    except Exception:
+                        pass
                 with self._lock:
-                    pos = self._interpolator.get_position()
-                    self._last_state.position_seconds = pos
-                    self._last_state.player_name = self.player_name or "active"
-                    return PlayerState(
-                        player_name=self._last_state.player_name,
-                        status=self._last_state.status,
-                        metadata=self._last_state.metadata,
-                        position_seconds=pos,
-                        volume=self._last_state.volume,
-                        loop=self._last_state.loop,
-                        shuffle=self._last_state.shuffle,
-                        can_control=self._last_state.can_control,
-                        can_seek=self._last_state.can_seek,
-                        can_go_next=self._last_state.can_go_next,
-                        can_go_previous=self._last_state.can_go_previous,
-                    )
-            except Exception as e:
-                self._handle_dbus_error(e)
-                if not self._playerctl_bin:
-                    return PlayerState(status=PlaybackStatus.DISCONNECTED)
+                    self._apply_dbus_properties(props_dict)
+            except dbus.DBusException:
+                with self._lock:
+                    status_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
+                    self._last_state.status = self._parse_status(str(status_val))
+                    meta_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Metadata")
+                    pos_val = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
+                    self._apply_dbus_properties({"Metadata": meta_val, "Position": pos_val})
+        except Exception as e:
+            self._handle_dbus_error(e)
 
-        # Fallback to playerctl if D-Bus is unavailable or disconnected
-        return self._get_state_playerctl()
+    def _playerctl_poll_loop(self) -> None:
+        """Background worker periodically polling playerctl state to avoid blocking UI thread."""
+        while self._running:
+            try:
+                self._poll_wake_event.wait(timeout=self._poll_interval)
+                self._poll_wake_event.clear()
+                if not self._running:
+                    break
+
+                with self._lock:
+                    prev_status = self._last_state.status
+                    prev_track_id = self._last_state.metadata.track_id
+                    prev_title = self._last_state.metadata.title
+                    prev_artist = self._last_state.metadata.artist
+
+                new_state = self._get_state_playerctl()
+
+                with self._lock:
+                    self._initialized = True
+                    state_changed = (
+                        new_state.status != prev_status
+                        or new_state.metadata.track_id != prev_track_id
+                        or new_state.metadata.title != prev_title
+                        or new_state.metadata.artist != prev_artist
+                    )
+
+                if state_changed and self.on_state_change:
+                    try:
+                        self.on_state_change()
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug("Error in playerctl poll loop: %s", e)
+
+    def get_state(self) -> PlayerState:
+        """Fetch current player state from cached D-Bus or playerctl state (non-blocking)."""
+        with self._lock:
+            if not self._initialized:
+                if self.use_dbus and self._props_iface:
+                    self._fetch_dbus_properties_sync()
+                else:
+                    self._last_state = self._get_state_playerctl()
+                self._initialized = True
+
+            pos = self._interpolator.get_position()
+            self._last_state.position_seconds = pos
+            self._last_state.player_name = self.player_name or "active"
+            return PlayerState(
+                player_name=self._last_state.player_name,
+                status=self._last_state.status,
+                metadata=self._last_state.metadata,
+                position_seconds=pos,
+                volume=self._last_state.volume,
+                loop=self._last_state.loop,
+                shuffle=self._last_state.shuffle,
+                can_control=self._last_state.can_control,
+                can_seek=self._last_state.can_seek,
+                can_go_next=self._last_state.can_go_next,
+                can_go_previous=self._last_state.can_go_previous,
+            )
 
     def _get_state_playerctl(self) -> PlayerState:
         """Fallback state reader using playerctl."""
@@ -734,13 +799,20 @@ class MPRISPlayer(BasePlayer):
             status_out = self._run_cmd(["status"], timeout=0.8)
             if status_out:
                 status = self._parse_status(status_out)
-                state = PlayerState(
-                    player_name=self.player_name or "active",
-                    status=status,
-                    can_control=True,
-                )
-                self._last_state = state
-                return state
+                with self._lock:
+                    now = time.monotonic()
+                    if now < self._status_hold_until and self._status_hold_target is not None:
+                        if status != self._status_hold_target:
+                            status = self._status_hold_target
+                        else:
+                            self._status_hold_until = 0.0
+                    state = PlayerState(
+                        player_name=self.player_name or "active",
+                        status=status,
+                        can_control=True,
+                    )
+                    self._last_state = state
+                    return state
             return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
         parts = output.split(self.FORMAT_DELIMITER)
@@ -801,54 +873,62 @@ class MPRISPlayer(BasePlayer):
         except ValueError:
             volume_val = 1.0
 
-        is_new_track = (
-            (track_id_str and self._last_state.metadata.track_id and track_id_str != self._last_state.metadata.track_id)
-            or (title_str and self._last_state.metadata.title and title_str != self._last_state.metadata.title)
-        )
+        with self._lock:
+            now = time.monotonic()
+            if now < self._status_hold_until and self._status_hold_target is not None:
+                if status != self._status_hold_target:
+                    status = self._status_hold_target
+                else:
+                    self._status_hold_until = 0.0
 
-        if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
-            duration_sec = self._last_state.metadata.duration_seconds
+            is_new_track = (
+                (track_id_str and self._last_state.metadata.track_id and track_id_str != self._last_state.metadata.track_id)
+                or (title_str and self._last_state.metadata.title and title_str != self._last_state.metadata.title)
+            )
 
-        if is_new_track:
-            self._track_epoch += 1
-            self._interpolator.reset_for_new_track(
-                initial_position=position_sec,
-                duration=duration_sec,
+            if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
+                duration_sec = self._last_state.metadata.duration_seconds
+
+            if is_new_track:
+                self._track_epoch += 1
+                self._interpolator.reset_for_new_track(
+                    initial_position=position_sec,
+                    duration=duration_sec,
+                    epoch=self._track_epoch,
+                )
+
+            metadata = TrackMetadata(
+                title=title_str,
+                artist=artist_str,
+                album=album_str,
+                duration_seconds=duration_sec,
+                art_url=art_url_str or None,
+                track_id=track_id_str,
+            )
+
+            self._interpolator.sync(
+                position_sec,
+                status,
+                duration_sec,
+                is_authoritative=is_new_track,
                 epoch=self._track_epoch,
             )
 
-        metadata = TrackMetadata(
-            title=title_str,
-            artist=artist_str,
-            album=album_str,
-            duration_seconds=duration_sec,
-            art_url=art_url_str or None,
-            track_id=track_id_str,
-        )
-
-        self._interpolator.sync(
-            position_sec,
-            status,
-            duration_sec,
-            is_authoritative=is_new_track,
-            epoch=self._track_epoch,
-        )
-
-        state = PlayerState(
-            player_name=self.player_name or "active",
-            status=status,
-            metadata=metadata,
-            position_seconds=position_sec,
-            volume=volume_val,
-            loop=loop,
-            shuffle=shuffle,
-            can_control=True,
-            can_seek=True,
-            can_go_next=True,
-            can_go_previous=True,
-        )
-        self._last_state = state
-        return state
+            state = PlayerState(
+                player_name=self.player_name or "active",
+                status=status,
+                metadata=metadata,
+                position_seconds=position_sec,
+                volume=volume_val,
+                loop=loop,
+                shuffle=shuffle,
+                can_control=True,
+                can_seek=True,
+                can_go_next=True,
+                can_go_previous=True,
+            )
+            self._last_state = state
+            return state
 
     def get_interpolated_position(self) -> float:
         """Returns the smoothed local playback or desired seek position."""
@@ -871,6 +951,13 @@ class MPRISPlayer(BasePlayer):
             if not self._last_state.can_seek and self._last_state.metadata.duration_seconds <= 0:
                 return False, "Player does not support seeking or duration is zero"
             return True, ""
+
+    def _notify_action(self) -> None:
+        """Trigger immediate state poll after a user control command."""
+        with self._lock:
+            self._state_seq += 1
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_wake_event.set()
 
     def seek(self, offset_seconds: float) -> None:
         """Relative seek: updates UI immediately and queues D-Bus Seek call."""
@@ -896,6 +983,7 @@ class MPRISPlayer(BasePlayer):
             else:
                 arg = f"{abs(offset_seconds):.1f}-"
             self._run_cmd(["position", arg])
+            self._notify_action()
 
     def set_position(self, target_seconds: float) -> None:
         """Absolute seek: validates track identity, updates UI and queues SetPosition."""
@@ -924,6 +1012,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("set_position", (track_id, pos_us, clamped, seq, self._track_epoch)))
         else:
             self._run_cmd(["position", f"{clamped:.1f}"])
+            self._notify_action()
 
     def play_pause(self) -> None:
         with self._lock:
@@ -949,6 +1038,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("play_pause", ()))
         else:
             self._run_cmd(["play-pause"])
+            self._notify_action()
 
     def play(self) -> None:
         with self._lock:
@@ -969,6 +1059,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("play", ()))
         else:
             self._run_cmd(["play"])
+            self._notify_action()
 
     def pause(self) -> None:
         with self._lock:
@@ -989,6 +1080,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("pause", ()))
         else:
             self._run_cmd(["pause"])
+            self._notify_action()
 
     def next_track(self) -> None:
         if self.use_dbus and self._player_iface:
@@ -1000,6 +1092,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("next", ()))
         else:
             self._run_cmd(["next"])
+            self._notify_action()
 
     def previous_track(self) -> None:
         if self.use_dbus and self._player_iface:
@@ -1011,6 +1104,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("previous", ()))
         else:
             self._run_cmd(["previous"])
+            self._notify_action()
 
     def set_volume(self, target_volume: float) -> None:
         clamped = max(0.0, min(1.0, target_volume))
@@ -1020,6 +1114,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("set_volume", (clamped,)))
         else:
             self._run_cmd(["volume", f"{clamped:.2f}"])
+            self._notify_action()
 
     def cycle_loop(self) -> None:
         order = [LoopStatus.NONE, LoopStatus.TRACK, LoopStatus.PLAYLIST]
@@ -1034,6 +1129,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("loop", (val_str,)))
         else:
             self._run_cmd(["loop", val_str])
+            self._notify_action()
 
     def toggle_shuffle(self) -> None:
         with self._lock:
@@ -1045,6 +1141,7 @@ class MPRISPlayer(BasePlayer):
             self._cmd_queue.put(("shuffle", (shuf_bool,)))
         else:
             self._run_cmd(["shuffle", "Toggle"])
+            self._notify_action()
 
     def _run_cmd(self, args: List[str], timeout: float = 1.0) -> Optional[str]:
         """Runs playerctl command safely as fallback."""
@@ -1073,8 +1170,12 @@ class MPRISPlayer(BasePlayer):
         return None
 
     def close(self) -> None:
-        """Release persistent D-Bus connections, signal matches, and worker thread."""
+        """Release persistent D-Bus connections, signal matches, worker thread, and poll thread."""
         self._running = False
+        self._poll_wake_event.set()
+        if self._poll_thread and self._poll_thread.is_alive():
+            self._poll_thread.join(timeout=0.5)
+
         if self._bus and self._signal_matches:
             for match in self._signal_matches:
                 try:

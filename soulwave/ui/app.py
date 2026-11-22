@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -216,6 +217,9 @@ class SoulwaveApp(App):
         # Periodic player auto-discovery & active player sync (every 2.5s)
         self.set_interval(2.5, self._periodic_player_discovery)
 
+        # Immediately draw initial frame
+        self._animation_tick()
+
     def _apply_theme(self) -> None:
         """Apply colors according to theme and dynamic accent."""
         self.active_theme = get_theme(self.active_theme_name)
@@ -263,19 +267,31 @@ class SoulwaveApp(App):
 
     def _periodic_player_discovery(self) -> None:
         """Periodic background check (every 2.5s) to auto-discover newly opened players or sync active audio source."""
-        switched = self.player_manager.check_player_sync()
-        if switched:
-            self._sync_player_state()
-            self._update_top_bar()
+        async def _check() -> None:
+            switched = await asyncio.to_thread(self.player_manager.check_player_sync)
+            if switched:
+                self._sync_player_state()
+                self._update_top_bar()
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_check())
+        except RuntimeError:
+            switched = self.player_manager.check_player_sync()
+            if switched:
+                self._sync_player_state()
+                self._update_top_bar()
 
     def _on_player_state_changed(self) -> None:
         """Invoked from background MPRIS worker when player state/metadata updates or new player appears."""
         try:
-            def _handle_event():
-                self.player_manager.check_player_sync()
-                self._sync_player_state()
-                self._update_top_bar()
-            self.call_from_thread(_handle_event)
+            def _schedule():
+                async def _handle():
+                    switched = await asyncio.to_thread(self.player_manager.check_player_sync)
+                    self._sync_player_state()
+                    self._update_top_bar()
+                asyncio.create_task(_handle())
+            self.call_from_thread(_schedule)
         except Exception:
             pass
 
@@ -359,11 +375,6 @@ class SoulwaveApp(App):
         # Update Views
         self.now_playing_view.update_state(state, self.accent_color)
         self.controls_view.update_state(state, self.accent_color)
-        self.progress_bar_view.update_progress(
-            state.position_seconds,
-            meta.duration_seconds,
-            self.accent_color,
-        )
 
     def _animation_tick(self) -> None:
         """High-frequency tick for smooth mascot animation, progress interpolation, and visualizer."""

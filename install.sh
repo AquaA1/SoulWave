@@ -237,6 +237,194 @@ detect_os() {
     esac
 }
 
+# Detect available Linux package manager based on distro and presence of binaries
+detect_package_manager() {
+    if [ -n "${SOULWAVE_TEST_PKG_MGR:-}" ]; then
+        echo "${SOULWAVE_TEST_PKG_MGR}"
+        return 0
+    fi
+
+    # Distro-first detection using detect_os outputs
+    case "${OS_ID:-}" in
+        ubuntu|debian|linuxmint|pop)
+            if command -v apt-get >/dev/null 2>&1 || command -v apt >/dev/null 2>&1; then
+                echo "apt"
+                return 0
+            fi
+            ;;
+        fedora|rhel|centos|rocky|almalinux)
+            if command -v dnf >/dev/null 2>&1; then
+                echo "dnf"
+                return 0
+            fi
+            ;;
+        arch|manjaro|endeavouros)
+            if command -v pacman >/dev/null 2>&1; then
+                echo "pacman"
+                return 0
+            fi
+            ;;
+        opensuse*|suse|sles)
+            if command -v zypper >/dev/null 2>&1; then
+                echo "zypper"
+                return 0
+            fi
+            ;;
+    esac
+
+    # Check OS_LIKE if OS_ID was derived/custom
+    if [[ "${OS_LIKE:-}" =~ (debian|ubuntu) ]] && (command -v apt-get >/dev/null 2>&1 || command -v apt >/dev/null 2>&1); then
+        echo "apt"
+        return 0
+    elif [[ "${OS_LIKE:-}" =~ (fedora|rhel) ]] && command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+        return 0
+    elif [[ "${OS_LIKE:-}" =~ (arch) ]] && command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+        return 0
+    elif [[ "${OS_LIKE:-}" =~ (suse) ]] && command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+        return 0
+    fi
+
+    # Check IS_RPM_DISTRO flag
+    if [ "${IS_RPM_DISTRO:-0}" -eq 1 ] && command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+        return 0
+    fi
+
+    # Generic binary fallback
+    if command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+        return 0
+    elif command -v apt-get >/dev/null 2>&1 || command -v apt >/dev/null 2>&1; then
+        echo "apt"
+        return 0
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "pacman"
+        return 0
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "zypper"
+        return 0
+    fi
+
+    echo "unknown"
+    return 1
+}
+
+# Return the appropriate command to install playerctl for the given package manager
+get_playerctl_install_command() {
+    local pkg_mgr="$1"
+    local mode="${2:-auto}" # auto (default) or manual
+
+    case "${pkg_mgr}" in
+        apt)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo apt install playerctl"
+            else
+                echo "sudo apt install -y playerctl"
+            fi
+            ;;
+        dnf)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo dnf install playerctl"
+            else
+                echo "sudo dnf install -y playerctl"
+            fi
+            ;;
+        pacman)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo pacman -S playerctl"
+            else
+                echo "sudo pacman -S --noconfirm playerctl"
+            fi
+            ;;
+        zypper)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo zypper install playerctl"
+            else
+                echo "sudo zypper install -y playerctl"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Verify that playerctl is installed and available in PATH
+verify_playerctl() {
+    if [ -n "${SOULWAVE_TEST_MOCK_PLAYERCTL_FILE:-}" ]; then
+        [ -f "${SOULWAVE_TEST_MOCK_PLAYERCTL_FILE}" ]
+        return $?
+    fi
+    command -v playerctl >/dev/null 2>&1
+}
+
+# Check if interactive input can be read
+is_interactive() {
+    if [ -n "${SOULWAVE_FORCE_INTERACTIVE:-}" ]; then
+        return 0
+    fi
+    if [ -n "${SOULWAVE_FORCE_NONINTERACTIVE:-}" ]; then
+        return 1
+    fi
+    if [ -n "${CI:-}" ] || [ -n "${NONINTERACTIVE:-}" ] || [ "${DEBIAN_FRONTEND:-}" = "noninteractive" ]; then
+        return 1
+    fi
+    if [ -c /dev/tty ] && (true < /dev/tty) 2>/dev/null; then
+        return 0
+    fi
+    if [ -t 0 ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Execute installation of playerctl via detected package manager and verify success
+install_playerctl() {
+    local pkg_mgr="$1"
+    local install_cmd
+    install_cmd="$(get_playerctl_install_command "${pkg_mgr}" "auto")"
+
+    if [ -z "${install_cmd}" ]; then
+        log_error "No installation command available for package manager '${pkg_mgr}'."
+        exit 1
+    fi
+
+    log_info "Installing playerctl using: ${install_cmd}"
+
+    local exit_code=0
+    if [ -c /dev/tty ] && (true < /dev/tty) 2>/dev/null && [ -z "${SOULWAVE_TEST_INPUT:-}" ] && [ -z "${SOULWAVE_READ_STDIN:-}" ]; then
+        eval "${install_cmd} < /dev/tty" || exit_code=$?
+    else
+        eval "${install_cmd}" || exit_code=$?
+    fi
+
+    if [ "${exit_code}" -ne 0 ]; then
+        echo ""
+        log_error "Failed to install playerctl (command exited with code ${exit_code})."
+        echo "    Possible reasons:"
+        echo "      - Sudo authentication failed or permission was denied"
+        echo "      - Another package manager process is currently running and holding the lock"
+        echo "      - Repository mirrors or network connections are unreachable"
+        echo ""
+        echo "    You can install playerctl manually and rerun the installer:"
+        local manual_cmd
+        manual_cmd="$(get_playerctl_install_command "${pkg_mgr}" "manual")"
+        echo "       ${manual_cmd:-Install playerctl via your distribution package manager.}"
+        echo ""
+        exit 1
+    fi
+
+    if ! verify_playerctl; then
+        log_error "Installation command completed, but 'playerctl' was not found in PATH."
+        exit 1
+    fi
+
+    log_success "Successfully installed and verified playerctl!"
+}
+
 # Check system prerequisites based on installation format
 check_prerequisites() {
     log_info "Checking system prerequisites..."
@@ -262,55 +450,107 @@ check_prerequisites() {
         fi
     fi
 
-    # Check optional recommended utilities (playerctl and cava)
-    local missing_recommended=()
-    if ! command -v playerctl >/dev/null 2>&1; then
-        missing_recommended+=("playerctl")
-    fi
-    if ! command -v cava >/dev/null 2>&1; then
-        missing_recommended+=("cava")
+    # If --no-deps was specified, skip dependency checks
+    if [ "${NO_DEPS}" -eq 1 ]; then
+        log_info "Skipping dependency installation (--no-deps specified)."
+        return 0
     fi
 
-    if [ ${#missing_recommended[@]} -gt 0 ]; then
-        log_warn "Recommended audio utilities not found: ${missing_recommended[*]}"
-        echo "    Soulwave needs them to track live desktop music (playerctl) and audio visualizer (cava)."
-
-        local install_cmd=""
-        if [ "${IS_RPM_DISTRO}" -eq 1 ]; then
-            install_cmd="sudo dnf install -y ${missing_recommended[*]}"
-        elif command -v apt >/dev/null 2>&1; then
-            install_cmd="sudo apt update -qq && sudo apt install -y ${missing_recommended[*]}"
-        elif command -v pacman >/dev/null 2>&1; then
-            install_cmd="sudo pacman -S --noconfirm --needed ${missing_recommended[*]}"
-        elif command -v zypper >/dev/null 2>&1; then
-            install_cmd="sudo zypper install -y ${missing_recommended[*]}"
+    # Check playerctl dependency
+    if ! verify_playerctl; then
+        local pkg_mgr
+        pkg_mgr="$(detect_package_manager || echo "unknown")"
+        local manual_cmd
+        manual_cmd="$(get_playerctl_install_command "${pkg_mgr}" "manual")"
+        if [ -z "${manual_cmd}" ]; then
+            manual_cmd="sudo <package-manager> install playerctl"
         fi
 
-        local installed_deps=0
-        # Check if running interactively with a controlling terminal and sudo is available
-        if [ -c /dev/tty ] && [ -n "${install_cmd}" ] && command -v sudo >/dev/null 2>&1; then
-            printf "\n==> Would you like to install them now with sudo? [y/N]: "
-            local answer=""
-            read -r answer < /dev/tty || answer="n"
-            if [[ "${answer}" =~ ^[Yy]$ ]]; then
-                log_info "Running: ${install_cmd}"
-                if eval "${install_cmd} < /dev/tty"; then
-                    log_success "Successfully installed audio utilities (${missing_recommended[*]})!"
-                    installed_deps=1
-                else
-                    log_warn "Installation failed or was cancelled. Continuing with Soulwave installation..."
-                fi
+        log_warn "Recommended audio utility not found: playerctl"
+        echo ""
+        echo "    SoulWave needs playerctl to track live music across Spotify,"
+        echo "    browsers, and media players."
+        echo ""
+
+        if [ "${pkg_mgr}" = "unknown" ]; then
+            log_warn "Automatic installation is unavailable because no supported package manager was detected."
+            echo "    Please install 'playerctl' manually through your distribution's package manager,"
+            echo "    then rerun the SoulWave installer:"
+            echo ""
+            echo "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
+            echo ""
+            log_info "Exiting installer."
+            exit 1
+        fi
+
+        if ! is_interactive; then
+            log_error "Interactive terminal not available for dependency installation."
+            echo "    Please install 'playerctl' manually:"
+            echo ""
+            echo "       ${manual_cmd}"
+            echo ""
+            echo "    Or rerun the installer with --no-deps to skip dependency installation:"
+            echo ""
+            echo "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash -s -- --no-deps"
+            echo ""
+            exit 1
+        fi
+
+        echo "  How would you like to proceed?"
+        echo ""
+        echo "    [1] (Recommended) Install playerctl automatically using sudo"
+        echo "    [2] Exit and install playerctl manually"
+        echo ""
+
+        local tty_in="/dev/tty"
+        if [ -n "${SOULWAVE_TEST_INPUT:-}" ] || [ -n "${SOULWAVE_READ_STDIN:-}" ] || [ ! -c /dev/tty ] || ! (true < /dev/tty) 2>/dev/null; then
+            tty_in="/dev/stdin"
+        fi
+
+        local choice=""
+        while true; do
+            printf "  Select an option [1-2] (default: 1): "
+            if ! read -r choice < "${tty_in}"; then
+                echo ""
+                log_error "Installation cancelled by user."
+                exit 1
             fi
-        fi
+            choice="$(echo "${choice}" | xargs 2>/dev/null || echo "${choice}")"
+            if [ -z "${choice}" ] || [ "${choice}" = "1" ]; then
+                choice="1"
+                break
+            elif [ "${choice}" = "2" ]; then
+                choice="2"
+                break
+            else
+                echo "Invalid selection: '${choice}'. Please enter 1 or 2."
+            fi
+        done
 
-        if [ "${installed_deps}" -eq 0 ]; then
+        if [ "${choice}" = "1" ]; then
+            install_playerctl "${pkg_mgr}"
+        else
             echo ""
-            echo "    No sudo permission given or install skipped."
-            echo "    You can install them yourself anytime and re-run:"
-            echo -e "      ${BOLD}${install_cmd:-sudo apt install ${missing_recommended[*]}}${RESET}"
-            echo "    (Soulwave will still install and work with built-in demo tracks!)"
+            log_info "Manual Installation Instructions"
             echo ""
+            echo "    1. Install playerctl:"
+            echo ""
+            echo "       ${manual_cmd}"
+            echo ""
+            echo "    2. Once installed, rerun the SoulWave installer:"
+            echo ""
+            echo "       curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
+            echo ""
+            log_info "Exiting installer."
+            exit 0
         fi
+    fi
+
+    # Check optional visualizer utility (cava)
+    if ! command -v cava >/dev/null 2>&1; then
+        log_info "Note: Audio visualizer utility 'cava' not found."
+        echo "    Soulwave will use its built-in visualizer fallback."
+        echo "    (Optional) Install cava to enable real-time hardware spectrum analysis."
     fi
 }
 

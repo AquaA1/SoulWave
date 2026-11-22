@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Callable, List, Optional
 from .base import BasePlayer, PlayerState, PlaybackStatus
 from .mpris import MPRISPlayer
@@ -20,6 +21,7 @@ class PlayerManager:
         force_demo: bool = False,
         on_state_change: Optional[Callable[[], None]] = None,
     ) -> None:
+        self._lock = threading.RLock()
         self.preferred_player = preferred_player
         self.force_demo = force_demo
         self.on_state_change = on_state_change
@@ -40,7 +42,8 @@ class PlayerManager:
 
     @property
     def current_player(self) -> BasePlayer:
-        return self._current_player
+        with self._lock:
+            return self._current_player
 
     @property
     def is_demo(self) -> bool:
@@ -116,92 +119,96 @@ class PlayerManager:
 
         Returns True if the active player was changed or reconnected.
         """
-        if self.force_demo or self._manual_demo_selected:
-            return False
+        with self._lock:
+            if self.force_demo or self._manual_demo_selected:
+                return False
 
-        detected = MPRISPlayer.list_players()
-        self._available_players = detected
+            detected = MPRISPlayer.list_players()
+            self._available_players = detected
 
-        if not detected:
-            if self._active_player_name != "":
-                logger.info("All media players disconnected. Entering waiting state.")
-                self._active_player_name = ""
-                if hasattr(self._current_player, "close"):
-                    self._current_player.close()
-                self._current_player = MPRISPlayer(on_state_change=self._on_subplayer_state_change)
-                return True
-            return False
+            if not detected:
+                if self._active_player_name != "":
+                    logger.info("All media players disconnected. Entering waiting state.")
+                    self._active_player_name = ""
+                    if hasattr(self._current_player, "close"):
+                        self._current_player.close()
+                    self._current_player = MPRISPlayer(on_state_change=self._on_subplayer_state_change)
+                    return True
+                return False
 
-        best = self.find_best_player(detected)
-        if not best:
-            return False
+            best = self.find_best_player(detected)
+            if not best:
+                return False
 
-        # If currently disconnected or no active player, switch immediately to best
-        current_state = self._current_player.get_state()
-        if not self._active_player_name or current_state.status == PlaybackStatus.DISCONNECTED:
-            logger.info("Auto-connecting to detected player: %s", best)
-            self.select_player(best)
-            return True
-
-        # If another player is PLAYING while current player is not PLAYING, auto-switch to it
-        if best != self._active_player_name:
-            best_status = MPRISPlayer.probe_player_status(best)
-            if best_status == PlaybackStatus.PLAYING and current_state.status != PlaybackStatus.PLAYING:
-                logger.info("Auto-switching to actively playing media player: %s", best)
+            # If currently disconnected or no active player, switch immediately to best
+            current_state = self._current_player.get_state()
+            if not self._active_player_name or current_state.status == PlaybackStatus.DISCONNECTED:
+                logger.info("Auto-connecting to detected player: %s", best)
                 self.select_player(best)
                 return True
 
-        return False
+            # If another player is PLAYING while current player is not PLAYING, auto-switch to it
+            if best != self._active_player_name:
+                best_status = MPRISPlayer.probe_player_status(best)
+                if best_status == PlaybackStatus.PLAYING and current_state.status != PlaybackStatus.PLAYING:
+                    logger.info("Auto-switching to actively playing media player: %s", best)
+                    self.select_player(best)
+                    return True
+
+            return False
 
     def select_player(self, player_name: str) -> None:
         """Switch to a specific player name."""
-        if hasattr(self._current_player, "close"):
-            self._current_player.close()
+        with self._lock:
+            if hasattr(self._current_player, "close"):
+                self._current_player.close()
 
-        if player_name == "Soulwave Demo" or self.force_demo:
-            self._current_player = self.mock_player
-            self._active_player_name = "Soulwave Demo"
-            return
+            if player_name == "Soulwave Demo" or self.force_demo:
+                self._current_player = self.mock_player
+                self._active_player_name = "Soulwave Demo"
+                return
 
-        self._active_player_name = player_name
-        self._current_player = MPRISPlayer(
-            player_name=player_name,
-            on_state_change=self._on_subplayer_state_change,
-        )
-        if player_name in self._available_players:
-            self._player_index = self._available_players.index(player_name)
+            self._active_player_name = player_name
+            self._current_player = MPRISPlayer(
+                player_name=player_name,
+                on_state_change=self._on_subplayer_state_change,
+            )
+            if player_name in self._available_players:
+                self._player_index = self._available_players.index(player_name)
 
     def switch_next_player(self) -> str:
         """Switch to the next available media player in circular order."""
-        self.refresh_players()
-        all_options = list(self._available_players)
-        all_options.append("Soulwave Demo")
+        with self._lock:
+            self.refresh_players()
+            all_options = list(self._available_players)
+            all_options.append("Soulwave Demo")
 
-        if not all_options:
-            self._manual_demo_selected = True
-            self.select_player("Soulwave Demo")
-            return "Soulwave Demo"
+            if not all_options:
+                self._manual_demo_selected = True
+                self.select_player("Soulwave Demo")
+                return "Soulwave Demo"
 
-        self._player_index = (self._player_index + 1) % len(all_options)
-        selected = all_options[self._player_index]
-        self._manual_demo_selected = (selected == "Soulwave Demo")
-        self.select_player(selected)
-        return selected
+            self._player_index = (self._player_index + 1) % len(all_options)
+            selected = all_options[self._player_index]
+            self._manual_demo_selected = (selected == "Soulwave Demo")
+            self.select_player(selected)
+            return selected
 
     def get_state(self) -> PlayerState:
         """Fetch current player state."""
-        if self.force_demo or self._manual_demo_selected:
-            return self.mock_player.get_state()
+        with self._lock:
+            if self.force_demo or self._manual_demo_selected:
+                return self.mock_player.get_state()
 
-        state = self._current_player.get_state()
-        if state.status == PlaybackStatus.DISCONNECTED:
-            # Check if any players appeared
-            players = MPRISPlayer.list_players()
-            if players:
-                best = self.find_best_player(players)
-                if best:
-                    self.select_player(best)
-                    state = self._current_player.get_state()
+            state = self._current_player.get_state()
+            if state.status == PlaybackStatus.DISCONNECTED:
+                # Check if any players appeared
+                players = MPRISPlayer.list_players()
+                if players:
+                    best = self.find_best_player(players)
+                    if best:
+                        self.select_player(best)
+                        state = self._current_player.get_state()
 
-        return state
+            return state
 
