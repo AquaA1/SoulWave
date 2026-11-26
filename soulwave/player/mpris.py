@@ -725,29 +725,13 @@ class MPRISPlayer(BasePlayer):
             )
             try:
                 raw_val = float(length_raw)
-                if raw_val > 10_000_000:
-                    duration_sec = max(0.0, raw_val / 1_000_000.0)
-                elif raw_val > 10_000:
-                    duration_sec = max(0.0, raw_val / 1_000.0)
-                else:
-                    duration_sec = max(0.0, raw_val)
+                duration_sec = max(0.0, raw_val / 1_000_000.0)
             except (ValueError, TypeError):
                 duration_sec = 0.0
 
             # If duration is temporarily missing during buffering for the SAME track, preserve known duration
             if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
                 duration_sec = self._last_state.metadata.duration_seconds
-
-            if is_new_track:
-                # Track identity changed! Advance epoch and reset interpolator cleanly
-                self._track_epoch += 1
-                init_pos = pos_sec_reported if pos_sec_reported is not None else 0.0
-                self._interpolator.reset_for_new_track(
-                    initial_position=init_pos,
-                    duration=duration_sec,
-                    epoch=self._track_epoch,
-                )
-                self._last_state.position_seconds = init_pos
 
             art_url_val = str(meta.get("mpris:artUrl", "")) or None
 
@@ -762,16 +746,37 @@ class MPRISPlayer(BasePlayer):
             if duration_sec > 0:
                 self._last_state.can_seek = True
 
-            # Keep interpolator in sync
-            sync_pos = pos_sec_reported if pos_sec_reported is not None else self._last_state.position_seconds
-            self._interpolator.sync(
-                sync_pos,
-                self._last_state.status,
-                duration_sec,
-                is_authoritative=is_new_track,
-                epoch=self._track_epoch,
-            )
-            self._last_state.position_seconds = sync_pos
+            if is_new_track:
+                # Track identity changed! Advance epoch and reset interpolator cleanly
+                self._track_epoch += 1
+                init_pos = pos_sec_reported if pos_sec_reported is not None else 0.0
+                self._interpolator.reset_for_new_track(
+                    initial_position=init_pos,
+                    duration=duration_sec,
+                    epoch=self._track_epoch,
+                )
+                self._interpolator.sync(
+                    init_pos,
+                    self._last_state.status,
+                    duration_sec,
+                    is_authoritative=True,
+                    epoch=self._track_epoch,
+                )
+                self._last_state.position_seconds = init_pos
+            elif pos_sec_reported is not None:
+                self._interpolator.sync(
+                    pos_sec_reported,
+                    self._last_state.status,
+                    duration_sec,
+                    epoch=self._track_epoch,
+                )
+                self._last_state.position_seconds = pos_sec_reported
+            else:
+                # Metadata-only update for an existing track:
+                # Do NOT sync interpolator with stale position!
+                if duration_sec > 0:
+                    self._interpolator._duration = duration_sec
+                self._last_state.position_seconds = self._interpolator.get_position()
 
         elif pos_sec_reported is not None:
             self._interpolator.sync(
@@ -928,12 +933,7 @@ class MPRISPlayer(BasePlayer):
 
         try:
             raw_len = float(length_str) if length_str else 0.0
-            if raw_len > 10_000_000:
-                duration_sec = max(0.0, raw_len / 1_000_000.0)
-            elif raw_len > 10_000:
-                duration_sec = max(0.0, raw_len / 1_000.0)
-            else:
-                duration_sec = max(0.0, raw_len)
+            duration_sec = max(0.0, raw_len / 1_000_000.0)
         except ValueError:
             duration_sec = 0.0
 
@@ -941,12 +941,7 @@ class MPRISPlayer(BasePlayer):
         if position_str:
             try:
                 raw_pos = float(position_str)
-                if raw_pos > 10_000_000:
-                    position_sec = max(0.0, raw_pos / 1_000_000.0)
-                elif raw_pos > 10_000:
-                    position_sec = max(0.0, raw_pos / 1_000.0)
-                else:
-                    position_sec = max(0.0, raw_pos)
+                position_sec = max(0.0, raw_pos / 1_000_000.0)
             except ValueError:
                 position_sec = 0.0
 

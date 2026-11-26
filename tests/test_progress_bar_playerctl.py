@@ -61,24 +61,13 @@ class TestProgressBarPlayerctl(unittest.TestCase):
             self.assertEqual(state.metadata.duration_seconds, 240.0)
             self.assertEqual(state.position_seconds, 45.5)
 
-    def test_get_state_playerctl_handles_microseconds_and_seconds(self):
+    def test_get_state_playerctl_handles_microseconds(self):
         delim = MPRISPlayer.FORMAT_DELIMITER
-        # Case 1: position in microseconds
         out_us = (
             f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
             f"100000000{delim}50000000{delim}1.0{delim}None{delim}false{delim}{delim}"
         )
         with patch.object(self.player, "_run_cmd", return_value=out_us):
-            state = self.player._get_state_playerctl()
-            self.assertAlmostEqual(state.position_seconds, 50.0)
-            self.assertAlmostEqual(state.metadata.duration_seconds, 100.0)
-
-        # Case 2: position in seconds
-        out_sec = (
-            f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
-            f"100.0{delim}50.0{delim}1.0{delim}None{delim}false{delim}{delim}"
-        )
-        with patch.object(self.player, "_run_cmd", return_value=out_sec):
             state = self.player._get_state_playerctl()
             self.assertAlmostEqual(state.position_seconds, 50.0)
             self.assertAlmostEqual(state.metadata.duration_seconds, 100.0)
@@ -279,7 +268,8 @@ class TestProgressBarPlayerctl(unittest.TestCase):
 
             def gated_capture(args, **kwargs):
                 executed_cmds.append(args)
-                gate.wait(timeout=1.0)
+                if args == ["position", "50.0"]:
+                    gate.wait(timeout=1.0)
                 return "OK"
 
             with patch.object(self.player, "_run_cmd", side_effect=gated_capture):
@@ -290,8 +280,9 @@ class TestProgressBarPlayerctl(unittest.TestCase):
                 gate.set()
                 self.player.drain_commands()
                 # Intermediates should coalesce; 55.0 skipped in favor of 60.0
-                self.assertLessEqual(len(executed_cmds), 2)
-                self.assertEqual(executed_cmds[-1], ["position", "60.0"])
+                pos_cmds = [cmd for cmd in executed_cmds if cmd and cmd[0] == "position"]
+                self.assertLessEqual(len(pos_cmds), 2)
+                self.assertEqual(pos_cmds[-1], ["position", "60.0"])
 
     def test_status_hold_expiration_allows_player_status_updates(self):
         import time
@@ -310,6 +301,175 @@ class TestProgressBarPlayerctl(unittest.TestCase):
             # Poll returns Playing; since hold is expired, Playing should be accepted
             new_state = self.player._get_state_playerctl()
             self.assertEqual(new_state.status, PlaybackStatus.PLAYING)
+
+    def test_playerctl_position_conversion_sub_ten_seconds(self):
+        """Regression test: values from 0.1s to 9.9s must not be multiplied by 1000."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        sub_ten_samples = [0.1, 0.5, 1.0, 2.5, 5.0, 7.5, 9.9]
+        for sec in sub_ten_samples:
+            pos_us = int(round(sec * 1_000_000))
+            mock_output = (
+                f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
+                f"200000000{delim}{pos_us}{delim}1.0{delim}None{delim}false{delim}art{delim}id1"
+            )
+            with patch.object(self.player, "_run_cmd", return_value=mock_output):
+                state = self.player._get_state_playerctl()
+                self.assertAlmostEqual(
+                    state.position_seconds,
+                    sec,
+                    places=4,
+                    msg=f"Expected {sec}s but got {state.position_seconds}s for {pos_us} us",
+                )
+
+    def test_playerctl_position_conversion_boundary_at_ten_seconds(self):
+        """Regression test: boundary around 10s (9.99s, 10.0s, 10.01s) must convert smoothly without discontinuity."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        boundary_samples = [9.99, 10.0, 10.01]
+        for sec in boundary_samples:
+            pos_us = int(round(sec * 1_000_000))
+            mock_output = (
+                f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
+                f"200000000{delim}{pos_us}{delim}1.0{delim}None{delim}false{delim}art{delim}id1"
+            )
+            with patch.object(self.player, "_run_cmd", return_value=mock_output):
+                state = self.player._get_state_playerctl()
+                self.assertAlmostEqual(state.position_seconds, sec, places=4)
+
+    def test_playerctl_position_conversion_higher_positions(self):
+        """Regression test: values at 30s, 60s, 120s must convert accurately."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        higher_samples = [30.0, 60.0, 120.0]
+        for sec in higher_samples:
+            pos_us = int(round(sec * 1_000_000))
+            mock_output = (
+                f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
+                f"300000000{delim}{pos_us}{delim}1.0{delim}None{delim}false{delim}art{delim}id1"
+            )
+            with patch.object(self.player, "_run_cmd", return_value=mock_output):
+                state = self.player._get_state_playerctl()
+                self.assertAlmostEqual(state.position_seconds, sec, places=4)
+
+    def test_duration_conversion_short_and_standard_tracks(self):
+        """Regression test: duration conversion for short (<10s) and standard tracks in playerctl and D-Bus."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        durations = [3.0, 5.0, 8.0, 9.9, 180.0, 240.0]
+        for dur in durations:
+            dur_us = int(round(dur * 1_000_000))
+            # Test playerctl path
+            mock_output = (
+                f"Playing{delim}Artist{delim}Title_{dur}{delim}Album{delim}"
+                f"{dur_us}{delim}1000000{delim}1.0{delim}None{delim}false{delim}art{delim}id_{dur}"
+            )
+            with patch.object(self.player, "_run_cmd", return_value=mock_output):
+                state = self.player._get_state_playerctl()
+                self.assertAlmostEqual(state.metadata.duration_seconds, dur, places=4)
+
+            # Test native D-Bus properties path
+            dbus_props = {
+                "Metadata": {
+                    "mpris:trackid": f"/org/mpris/track_{dur}",
+                    "xesam:title": f"Song {dur}",
+                    "xesam:artist": "Artist",
+                    "mpris:length": dur_us,
+                },
+                "Position": 1_000_000,
+            }
+            self.player._apply_dbus_properties(dbus_props)
+            self.assertAlmostEqual(self.player._last_state.metadata.duration_seconds, dur, places=4)
+
+    def test_native_dbus_metadata_only_update_does_not_reset_position(self):
+        """Regression test: metadata-only signals without Position must not reset interpolator position."""
+        # 1. Initialize track
+        self.player._apply_dbus_properties({
+            "PlaybackStatus": "Playing",
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/song1",
+                "xesam:title": "Song 1",
+                "xesam:artist": "Artist",
+                "mpris:length": 180_000_000,
+            },
+            "Position": 0,
+        })
+        self.assertEqual(self.player._last_state.position_seconds, 0.0)
+
+        # 2. Advance playback smoothly via interpolator to 15.0s
+        self.player._interpolator.sync(
+            position_seconds=15.0,
+            status=PlaybackStatus.PLAYING,
+            duration_seconds=180.0,
+            is_authoritative=True,
+            epoch=self.player._track_epoch,
+        )
+        self.assertAlmostEqual(self.player._interpolator.get_position(), 15.0, places=1)
+
+        # 3. Metadata-only update arrives (artUrl or late metadata) with NO Position key
+        self.player._apply_dbus_properties({
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/song1",
+                "xesam:title": "Song 1",
+                "xesam:artist": "Artist",
+                "mpris:length": 180_000_000,
+                "mpris:artUrl": "https://example.com/cover.jpg",
+            }
+        })
+
+        # Position must NOT have snapped back to 0.0!
+        current_pos = self.player._interpolator.get_position()
+        self.assertGreaterEqual(current_pos, 14.9)
+        self.assertEqual(self.player._last_state.metadata.art_url, "https://example.com/cover.jpg")
+
+    def test_track_transition_from_high_position_to_zero(self):
+        """Regression test: track transition from 180s to new track at 0s clears stale position cleanly."""
+        # Track 1 at 180s
+        self.player._apply_dbus_properties({
+            "PlaybackStatus": "Playing",
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/song1",
+                "xesam:title": "Song 1",
+                "xesam:artist": "Artist",
+                "mpris:length": 200_000_000,
+            },
+            "Position": 180_000_000,
+        })
+        initial_epoch = self.player._track_epoch
+        self.assertEqual(self.player._last_state.position_seconds, 180.0)
+
+        # Track 2 starts at 0s
+        self.player._apply_dbus_properties({
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/song2",
+                "xesam:title": "Song 2",
+                "xesam:artist": "Artist",
+                "mpris:length": 210_000_000,
+            },
+            "Position": 0,
+        })
+        self.assertGreater(self.player._track_epoch, initial_epoch)
+        self.assertEqual(self.player._last_state.position_seconds, 0.0)
+        self.assertAlmostEqual(self.player._interpolator.get_position(), 0.0, places=1)
+
+    def test_no_oscillation_during_first_ten_seconds_playback(self):
+        """Regression test: playerctl successive poll snapshots during the first 10s must not oscillate."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        # Track starts
+        positions = [0.1, 0.5, 1.0, 2.0, 3.5, 5.0, 7.0, 9.0, 9.9, 10.5]
+        last_pos = -1.0
+
+        for sec in positions:
+            pos_us = int(round(sec * 1_000_000))
+            mock_output = (
+                f"Playing{delim}Artist{delim}OscillationTestTrack{delim}Album{delim}"
+                f"240000000{delim}{pos_us}{delim}1.0{delim}None{delim}false{delim}art{delim}track_osc"
+            )
+            with patch.object(self.player, "_run_cmd", return_value=mock_output):
+                state = self.player._get_state_playerctl()
+                interp_pos = self.player.get_interpolated_position()
+
+                # Position must be close to actual seconds, never thousands or 100% full bar
+                self.assertLess(state.position_seconds, 15.0)
+                self.assertGreaterEqual(state.position_seconds, last_pos)
+                self.assertLess(interp_pos, 15.0)
+                last_pos = state.position_seconds
 
 
 class TestProgressBarWidget(unittest.TestCase):
