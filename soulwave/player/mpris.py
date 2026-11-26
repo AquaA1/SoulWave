@@ -34,8 +34,10 @@ try:
     import dbus.mainloop.glib
     from gi.repository import GLib
 
+    dbus.mainloop.glib.threads_init()
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     _DBUS_AVAILABLE = True
-except ImportError:
+except Exception:
     _DBUS_AVAILABLE = False
     dbus = None
     GLib = None
@@ -139,6 +141,7 @@ class MPRISPlayer(BasePlayer):
         self._poll_interval = 0.6
         self._state_seq: int = 0
         self._initialized: bool = False
+        self._last_cmd_timed_out: bool = False
 
         if self.use_dbus:
             if not self._init_dbus():
@@ -166,6 +169,23 @@ class MPRISPlayer(BasePlayer):
     _cached_players: List[str] = []
     _cached_players_time: float = 0.0
     _players_lock = threading.Lock()
+
+    @classmethod
+    def invalidate_cache(cls, removed_player: Optional[str] = None) -> None:
+        """Invalidate the cached list of active MPRIS players."""
+        with cls._players_lock:
+            cls._cached_players_time = 0.0
+            if removed_player:
+                p_norm = removed_player
+                prefix = "org.mpris.MediaPlayer2."
+                if p_norm.startswith(prefix):
+                    p_norm = p_norm[len(prefix):]
+                cls._cached_players = [
+                    p for p in cls._cached_players
+                    if p != p_norm and not p.startswith(p_norm)
+                ]
+            else:
+                cls._cached_players = []
 
     @classmethod
     def list_players(cls, force: bool = False) -> List[str]:
@@ -671,18 +691,37 @@ class MPRISPlayer(BasePlayer):
     def _on_name_owner_changed(self, name: str, old_owner: str, new_owner: str) -> None:
         """Detects media player launch, exit or disconnect."""
         name_str = str(name)
-        if self._bus_name and name_str == self._bus_name and not new_owner:
+        prefix = "org.mpris.MediaPlayer2."
+        p_short = name_str[len(prefix):] if name_str.startswith(prefix) else name_str
+
+        # Invalidate discovery cache on any player lifecycle event
+        if name_str.startswith(prefix):
+            self.invalidate_cache(p_short if not new_owner else None)
+
+        is_current = (
+            (self._bus_name and name_str == self._bus_name)
+            or (self.player_name and (p_short == self.player_name or self.player_name.startswith(p_short)))
+        )
+
+        if is_current and not new_owner:
             logger.info("Player %s disconnected from D-Bus", name_str)
             with self._lock:
-                self._last_state.status = PlaybackStatus.DISCONNECTED
-                self._last_state.can_control = False
-                self._last_state.can_seek = False
+                self._last_state = PlayerState(
+                    player_name=self.player_name or "",
+                    status=PlaybackStatus.DISCONNECTED,
+                    metadata=TrackMetadata(title="", artist="", album="", duration_seconds=0.0),
+                    position_seconds=0.0,
+                    can_control=False,
+                    can_seek=False,
+                )
+                self._interpolator.reset_for_new_track(epoch=self._track_epoch)
+                self._interpolator.sync(0.0, PlaybackStatus.DISCONNECTED, 0.0, epoch=self._track_epoch)
             if self.on_state_change:
                 try:
                     self.on_state_change()
                 except Exception:
                     pass
-        elif name_str.startswith("org.mpris.MediaPlayer2.") and new_owner:
+        elif name_str.startswith(prefix) and new_owner:
             logger.info("New MPRIS player appeared on D-Bus: %s", name_str)
             if self.on_state_change:
                 try:
@@ -694,10 +733,18 @@ class MPRISPlayer(BasePlayer):
         """Handles D-Bus connection or method errors."""
         err_msg = str(err)
         if "NameHasNoOwner" in err_msg or "ServiceUnknown" in err_msg or "Disconnected" in err_msg:
+            self.invalidate_cache(self.player_name)
             with self._lock:
-                self._last_state.status = PlaybackStatus.DISCONNECTED
-                self._last_state.can_control = False
-                self._last_state.can_seek = False
+                self._last_state = PlayerState(
+                    player_name=self.player_name or "",
+                    status=PlaybackStatus.DISCONNECTED,
+                    metadata=TrackMetadata(title="", artist="", album="", duration_seconds=0.0),
+                    position_seconds=0.0,
+                    can_control=False,
+                    can_seek=False,
+                )
+                self._interpolator.reset_for_new_track(epoch=self._track_epoch)
+                self._interpolator.sync(0.0, PlaybackStatus.DISCONNECTED, 0.0, epoch=self._track_epoch)
             if self.on_state_change:
                 try:
                     self.on_state_change()
@@ -790,6 +837,26 @@ class MPRISPlayer(BasePlayer):
                 duration_sec = max(0.0, raw_val / 1_000_000.0)
             except (ValueError, TypeError):
                 duration_sec = 0.0
+
+            raw_title = str(meta.get("xesam:title", "")).strip()
+            has_artist = bool(
+                artist_raw
+                and any(str(a).strip() for a in (artist_raw if isinstance(artist_raw, (list, tuple)) else [artist_raw]))
+            )
+            is_empty_meta = (
+                not raw_title
+                or raw_title in ("Unknown Track", "No Track Playing", "")
+                or (raw_title == "Firefox is playing media" and duration_sec <= 0.0 and not has_artist)
+            )
+
+            if self._last_state.status == PlaybackStatus.STOPPED and is_empty_meta:
+                # Music tab closed, browser still running: clear previous track & progress
+                self._last_state.metadata = TrackMetadata(title="", artist="", album="", duration_seconds=0.0)
+                self._last_state.position_seconds = 0.0
+                self._track_epoch += 1
+                self._interpolator.reset_for_new_track(epoch=self._track_epoch)
+                self._interpolator.sync(0.0, PlaybackStatus.STOPPED, 0.0, epoch=self._track_epoch)
+                return
 
             # If duration is temporarily missing during buffering for the SAME track, preserve known duration
             if duration_sec <= 0.0 and not (is_new_track or is_initial_track) and self._last_state.metadata.duration_seconds > 0:
@@ -933,9 +1000,15 @@ class MPRISPlayer(BasePlayer):
                     self._last_state = self._get_state_playerctl()
                 self._initialized = True
 
-            pos = self._interpolator.get_position()
-            self._last_state.position_seconds = pos
-            self._last_state.player_name = self.player_name or "active"
+            if self._last_state.status == PlaybackStatus.DISCONNECTED:
+                pos = 0.0
+                self._last_state.position_seconds = 0.0
+                self._last_state.player_name = self.player_name or ""
+            else:
+                pos = self._interpolator.get_position()
+                self._last_state.position_seconds = pos
+                self._last_state.player_name = self.player_name or ""
+
             return PlayerState(
                 player_name=self._last_state.player_name,
                 status=self._last_state.status,
@@ -958,9 +1031,11 @@ class MPRISPlayer(BasePlayer):
         if not self.player_name and not self.list_players():
             return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
-        output = self._run_cmd(["metadata", "--format", self.FORMAT_STRING], timeout=1.2)
-        if not output:
+        meta_out = self._run_cmd(["metadata", "--format", self.FORMAT_STRING], timeout=1.2)
+        meta_timeout = getattr(self, "_last_cmd_timed_out", False)
+        if not meta_out:
             status_out = self._run_cmd(["status"], timeout=0.8)
+            status_timeout = getattr(self, "_last_cmd_timed_out", False)
             if status_out:
                 status = self._parse_status(status_out)
                 with self._lock:
@@ -972,18 +1047,67 @@ class MPRISPlayer(BasePlayer):
                             status = self._status_hold_target
                         else:
                             self._status_hold_until = 0.0
+
+                    if status == PlaybackStatus.STOPPED:
+                        # Music tab closed, browser still running
+                        state = PlayerState(
+                            player_name=self.player_name or "",
+                            status=PlaybackStatus.STOPPED,
+                            metadata=TrackMetadata(title="", artist="", album="", duration_seconds=0.0),
+                            position_seconds=0.0,
+                            can_control=True,
+                        )
+                        self._last_state = state
+                        self._interpolator.reset_for_new_track(epoch=self._track_epoch)
+                        self._interpolator.sync(0.0, PlaybackStatus.STOPPED, 0.0, epoch=self._track_epoch)
+                        return state
+
                     meta = self._last_state.metadata if self._last_state.metadata.title else TrackMetadata()
                     state = PlayerState(
-                        player_name=self.player_name or "active",
+                        player_name=self.player_name or "",
                         status=status,
                         metadata=meta,
                         can_control=True,
                     )
                     self._last_state = state
                     return state
-            return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
-        parts = output.split(self.FORMAT_DELIMITER)
+            # Temporary timeout: keep current state rather than disconnecting prematurely
+            if meta_timeout or status_timeout:
+                logger.debug("Playerctl command timed out for %s, retaining last state", self.player_name)
+                with self._lock:
+                    return self._last_state
+
+            # Both returned without timeout and without success -> check active players
+            try:
+                active_players = self.list_players(force=True)
+            except TypeError:
+                active_players = self.list_players()
+            pname = self.player_name or ""
+            prefix = "org.mpris.MediaPlayer2."
+            if pname.startswith(prefix):
+                pname = pname[len(prefix):]
+            if pname and (pname in active_players or any(p.startswith(pname) for p in active_players)):
+                with self._lock:
+                    return self._last_state
+
+            # Definitively disconnected!
+            self.invalidate_cache(self.player_name)
+            with self._lock:
+                disc_state = PlayerState(
+                    player_name=self.player_name or "",
+                    status=PlaybackStatus.DISCONNECTED,
+                    metadata=TrackMetadata(title="", artist="", album="", duration_seconds=0.0),
+                    position_seconds=0.0,
+                    can_control=False,
+                    can_seek=False,
+                )
+                self._last_state = disc_state
+                self._interpolator.reset_for_new_track(epoch=self._track_epoch)
+                self._interpolator.sync(0.0, PlaybackStatus.DISCONNECTED, 0.0, epoch=self._track_epoch)
+                return disc_state
+
+        parts = meta_out.split(self.FORMAT_DELIMITER)
         if len(parts) < 9:
             return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
@@ -1278,6 +1402,7 @@ class MPRISPlayer(BasePlayer):
 
     def _run_cmd(self, args: List[str], timeout: float = 1.0) -> Optional[str]:
         """Runs playerctl command safely as fallback."""
+        self._last_cmd_timed_out = False
         if not self._playerctl_bin:
             return None
         cmd = [self._playerctl_bin]
@@ -1298,6 +1423,8 @@ class MPRISPlayer(BasePlayer):
             )
             if res.returncode == 0:
                 return res.stdout.strip()
+        except subprocess.TimeoutExpired:
+            self._last_cmd_timed_out = True
         except (subprocess.SubprocessError, OSError):
             pass
         return None

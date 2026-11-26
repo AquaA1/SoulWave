@@ -255,7 +255,7 @@ class SoulwaveApp(App):
         t.append("🎧 SOULWAVE", style=Style(color="rgb(255, 255, 255)", bold=True))
         t.append("   Player: ", style=Style(color="rgb(148, 163, 184)"))
         p_name = self._last_state.player_name or "None"
-        if self._last_state.status == PlaybackStatus.DISCONNECTED and (not p_name or p_name == "None"):
+        if self._last_state.status == PlaybackStatus.DISCONNECTED or not p_name or p_name in ("None", "active", ""):
             p_display = "Searching..."
         else:
             p_display = p_name
@@ -324,7 +324,13 @@ class SoulwaveApp(App):
             "No Track Playing",
             "Waiting for playback...",
             "Waiting for media playback...",
-        )
+        ) and not (meta.title == "Firefox is playing media" and meta.duration_seconds <= 0.0)
+
+        if not is_connected or not has_real_track:
+            self._known_durations.pop(track_key, None)
+            meta.duration_seconds = 0.0
+            state.position_seconds = 0.0
+            self.progress_bar_view.update_progress(0.0, 0.0, self.accent_color)
 
         # Check track change
         if track_key != self.current_track_key:
@@ -388,14 +394,26 @@ class SoulwaveApp(App):
         self.mascot_view.refresh()
 
         # Local progress interpolation
-        if hasattr(self.player_manager.current_player, "get_interpolated_position"):
+        is_disconnected = self._last_state.status == PlaybackStatus.DISCONNECTED
+        has_real_track = bool(self._last_state.metadata.title.strip()) and self._last_state.metadata.title not in (
+            "No Track Playing",
+            "Waiting for playback...",
+            "Waiting for media playback...",
+        ) and not (self._last_state.metadata.title == "Firefox is playing media" and self._last_state.metadata.duration_seconds <= 0.0)
+
+        if is_disconnected or not has_real_track:
+            pos = 0.0
+            duration = 0.0
+        elif hasattr(self.player_manager.current_player, "get_interpolated_position"):
             pos = self.player_manager.current_player.get_interpolated_position()
+            duration = self._last_state.metadata.duration_seconds
         else:
             pos = self._last_state.position_seconds
+            duration = self._last_state.metadata.duration_seconds
 
         self.progress_bar_view.update_progress(
             pos,
-            self._last_state.metadata.duration_seconds,
+            duration,
             self.accent_color,
         )
 

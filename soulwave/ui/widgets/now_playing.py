@@ -46,7 +46,7 @@ class NowPlayingView(Widget):
         # Player badge and status
         is_disconnected = self.state.status == PlaybackStatus.DISCONNECTED
         player_name = self.state.player_name or "None"
-        if is_disconnected and (not player_name or player_name == "None"):
+        if is_disconnected or not player_name or player_name in ("None", "active", ""):
             badge_name = "WAITING"
             status_text = " ○ SEARCHING FOR PLAYER "
             status_style = Style(color="rgb(148, 163, 184)", bold=True)
@@ -69,7 +69,16 @@ class NowPlayingView(Widget):
         t.append("\n\n")
 
         # Track title and metadata
-        if is_disconnected or not self.state.metadata.title or self.state.metadata.title == "No Track Playing":
+        has_no_track = (
+            not self.state.metadata.title
+            or self.state.metadata.title in (
+                "No Track Playing",
+                "Waiting for playback...",
+                "Waiting for media playback...",
+            )
+            or (self.state.metadata.title == "Firefox is playing media" and self.state.metadata.duration_seconds <= 0.0)
+        )
+        if is_disconnected or has_no_track:
             if not is_mpris_available() and self.state.player_name != "Soulwave Demo":
                 hint = get_playerctl_install_hint()
                 title = "⚠️ 'playerctl' not found — media tracking inactive"
