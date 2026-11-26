@@ -276,3 +276,46 @@ def test_pause_and_resume_timeline_behavior():
     # 3 seconds later playing, position advances smoothly to 35.0s
     assert abs(interp.get_position(now=t0 + 15.0) - 35.0) < 0.01
 
+
+def test_playing_zero_position_zero_duration_no_phantom_progress():
+    """Requirement: PLAYING + position 0 + duration 0 must NOT produce phantom progress."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    interp.sync(position_seconds=0.0, status=PlaybackStatus.PLAYING, duration_seconds=0.0, timestamp=t0)
+
+    # 5 seconds later, position must remain 0.0, NOT 5.0 phantom seconds
+    assert interp.get_position(now=t0 + 5.0) == 0.0
+    assert interp.get_confirmed_position(now=t0 + 5.0) == 0.0
+
+
+def test_duration_arrives_several_seconds_after_startup():
+    """Requirement: When duration arrives after startup, delay is not counted as playback time."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    # Startup: PLAYING, pos 0, dur 0
+    interp.sync(position_seconds=0.0, status=PlaybackStatus.PLAYING, duration_seconds=0.0, timestamp=t0)
+    assert interp.get_position(now=t0 + 3.0) == 0.0
+
+    # 3.0 seconds later, metadata arrives with valid duration (e.g. 180s)
+    t1 = t0 + 3.0
+    interp.set_duration(180.0, timestamp=t1)
+
+    # Immediately when duration arrives, position should still be 0.0
+    assert interp.get_position(now=t1) == 0.0
+
+    # 2 seconds after duration arrived (t1 + 2.0 = t0 + 5.0), position should be 2.0s, not 5.0s!
+    assert abs(interp.get_position(now=t1 + 2.0) - 2.0) < 0.01
+
+
+def test_authoritative_nonzero_position_without_duration_interpolates():
+    """Requirement: Authoritative non-zero position without duration (e.g. radio stream) interpolates normally."""
+    interp = PositionInterpolator()
+    t0 = 100.0
+    # Live stream at 45.0s, duration 0.0
+    interp.sync(position_seconds=45.0, status=PlaybackStatus.PLAYING, duration_seconds=0.0, timestamp=t0)
+
+    assert interp.get_position(now=t0) == 45.0
+    # 2.5s later, advances to 47.5s
+    assert abs(interp.get_position(now=t0 + 2.5) - 47.5) < 0.01
+
+

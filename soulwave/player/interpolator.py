@@ -88,6 +88,8 @@ class PositionInterpolator:
         self._last_reported_pos = pos
 
         if duration_seconds > 0.0:
+            if self._duration <= 0.0 and self._confirmed_position == 0.0:
+                self._last_sync_time = now
             self._duration = duration_seconds
 
         if is_authoritative or not self._initialized or old_status != status:
@@ -196,6 +198,10 @@ class PositionInterpolator:
         if self._status != PlaybackStatus.PLAYING:
             return self._confirmed_position
 
+        # Prevent phantom elapsed-time advancement when position is 0.0 and duration is unknown (<= 0.0)
+        if self._duration <= 0.0 and self._confirmed_position == 0.0:
+            return 0.0
+
         elapsed = current_time - self._last_sync_time
         interpolated = self._confirmed_position + max(0.0, elapsed)
 
@@ -208,12 +214,23 @@ class PositionInterpolator:
         if self._status != PlaybackStatus.PLAYING:
             return self._confirmed_position
 
+        if self._duration <= 0.0 and self._confirmed_position == 0.0:
+            return 0.0
+
         current_time = now if now is not None else time.monotonic()
         elapsed = current_time - self._last_sync_time
         interpolated = self._confirmed_position + max(0.0, elapsed)
         if self._duration > 0.0:
             return min(interpolated, self._duration)
         return interpolated
+
+    def set_duration(self, duration_seconds: float, timestamp: float | None = None) -> None:
+        """Update track duration and reset timing anchor if transitioning from unknown duration at 0.0."""
+        if duration_seconds > 0.0:
+            now = timestamp if timestamp is not None else time.monotonic()
+            if self._duration <= 0.0 and self._confirmed_position == 0.0:
+                self._last_sync_time = now
+            self._duration = duration_seconds
 
     def start_seek(self, target_seconds: float, timestamp: float | None = None) -> float:
         """Initiate an absolute seek. Returns clamped desired position."""

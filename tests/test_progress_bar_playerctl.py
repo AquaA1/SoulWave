@@ -471,6 +471,109 @@ class TestProgressBarPlayerctl(unittest.TestCase):
                 self.assertLess(interp_pos, 15.0)
                 last_pos = state.position_seconds
 
+    def test_startup_playerctl_status_only_then_valid_metadata(self):
+        """Test playerctl startup: initially status only (no metadata/duration), then valid metadata."""
+        delim = MPRISPlayer.FORMAT_DELIMITER
+
+        # 1. Startup: metadata fails, status command returns "Playing"
+        with patch.object(self.player, "_run_cmd") as mock_cmd:
+            def side_effect(cmd, **kwargs):
+                if cmd and cmd[0] == "metadata":
+                    return ""
+                if cmd and cmd[0] == "status":
+                    return "Playing"
+                return ""
+            mock_cmd.side_effect = side_effect
+
+            state = self.player._get_state_playerctl()
+            self.assertEqual(state.status, PlaybackStatus.PLAYING)
+            self.assertEqual(state.metadata.duration_seconds, 0.0)
+            # Interpolator must NOT advance phantom progress!
+            self.assertEqual(self.player.get_interpolated_position(), 0.0)
+
+        # 2. Next poll tick: valid metadata becomes available
+        mock_output = (
+            f"Playing{delim}Artist{delim}StartupSong{delim}Album{delim}"
+            f"180000000{delim}15000000{delim}1.0{delim}None{delim}false{delim}art{delim}id_startup"
+        )
+        with patch.object(self.player, "_run_cmd", return_value=mock_output):
+            state2 = self.player._get_state_playerctl()
+            self.assertEqual(state2.metadata.title, "StartupSong")
+            self.assertAlmostEqual(state2.metadata.duration_seconds, 180.0, places=1)
+            self.assertAlmostEqual(state2.position_seconds, 15.0, places=1)
+            self.assertAlmostEqual(self.player.get_interpolated_position(), 15.0, places=1)
+
+    def test_native_dbus_metadata_without_position_triggers_async_fetch(self):
+        """Test native D-Bus: metadata arriving without Position triggers async position fetch."""
+        mock_props = MagicMock()
+        mock_props.Get.return_value = 45_000_000  # 45.0s in microseconds
+        self.player._props_iface = mock_props
+        self.player.use_dbus = True
+
+        # Metadata arrives without Position
+        self.player._apply_dbus_properties({
+            "PlaybackStatus": "Playing",
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/track_async",
+                "xesam:title": "AsyncSong",
+                "xesam:artist": "Artist",
+                "mpris:length": 240_000_000,
+            }
+        })
+
+        # Wait for worker thread to process fetch_position
+        self.player._cmd_queue.join()
+
+        # Position should have been synchronized to 45.0s!
+        self.assertAlmostEqual(self.player._last_state.position_seconds, 45.0, places=1)
+        self.assertAlmostEqual(self.player._interpolator.get_position(), 45.0, places=1)
+        self.assertAlmostEqual(self.player._last_state.metadata.duration_seconds, 240.0, places=1)
+
+    def test_track_changes_while_async_position_request_pending(self):
+        """Test track changes while an async position fetch is in-flight: stale position discarded."""
+        mock_props = MagicMock()
+        # Simulate slow D-Bus Get("Position") that returns track 1's position (100.0s)
+        def delayed_get(iface, prop):
+            time.sleep(0.05)
+            return 100_000_000
+        mock_props.Get.side_effect = delayed_get
+        self.player._props_iface = mock_props
+        self.player.use_dbus = True
+
+        # Track 1 arrives without position
+        self.player._apply_dbus_properties({
+            "PlaybackStatus": "Playing",
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/track1",
+                "xesam:title": "Track 1",
+                "xesam:artist": "Artist",
+                "mpris:length": 200_000_000,
+            }
+        })
+        epoch_track1 = self.player._track_epoch
+
+        # Track 2 arrives immediately with known position 5.0s before worker finishes
+        self.player._apply_dbus_properties({
+            "PlaybackStatus": "Playing",
+            "Metadata": {
+                "mpris:trackid": "/org/mpris/track2",
+                "xesam:title": "Track 2",
+                "xesam:artist": "Artist",
+                "mpris:length": 150_000_000,
+            },
+            "Position": 5_000_000,
+        })
+        epoch_track2 = self.player._track_epoch
+        self.assertGreater(epoch_track2, epoch_track1)
+
+        # Wait for worker queue to complete
+        self.player._cmd_queue.join()
+
+        # Position must be Track 2's position (5.0s), NOT overwritten by Track 1's delayed 100.0s!
+        self.assertAlmostEqual(self.player._last_state.position_seconds, 5.0, places=1)
+        self.assertAlmostEqual(self.player._interpolator.get_position(), 5.0, places=1)
+        self.assertEqual(self.player._last_state.metadata.title, "Track 2")
+
 
 class TestProgressBarWidget(unittest.TestCase):
     def test_format_time(self):

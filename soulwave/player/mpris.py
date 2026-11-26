@@ -130,6 +130,8 @@ class MPRISPlayer(BasePlayer):
 
         # Track generation / epoch tracking
         self._track_epoch: int = 0
+        self._position_fetch_pending: bool = False
+        self._position_fetch_epoch: int = -1
 
         # Background state poller and sequence tracking
         self._poll_thread: Optional[threading.Thread] = None
@@ -502,12 +504,68 @@ class MPRISPlayer(BasePlayer):
                         self._run_cmd(["shuffle", "Toggle"])
                         self._notify_action()
 
+                elif cmd_type == "fetch_position":
+                    epoch = args[0]
+                    with self._lock:
+                        self._position_fetch_pending = False
+                        if not self._running or epoch != self._track_epoch:
+                            continue
+
+                    pos_s: Optional[float] = None
+                    if self.use_dbus and self._props_iface:
+                        try:
+                            current_us = self._props_iface.Get("org.mpris.MediaPlayer2.Player", "Position")
+                            pos_s = max(0.0, float(current_us) / 1_000_000.0)
+                        except Exception as e:
+                            logger.debug("Async position fetch D-Bus Get failed: %s", e)
+                    elif self._playerctl_bin:
+                        res = self._run_cmd(["position"])
+                        if res:
+                            try:
+                                pos_s = max(0.0, float(res))
+                            except ValueError:
+                                pass
+
+                    if pos_s is not None:
+                        cb = None
+                        with self._lock:
+                            if self._running and epoch == self._track_epoch:
+                                self._interpolator.sync(
+                                    pos_s,
+                                    self._last_state.status,
+                                    self._last_state.metadata.duration_seconds,
+                                    is_authoritative=True,
+                                    epoch=epoch,
+                                )
+                                self._last_state.position_seconds = self._interpolator.get_position()
+                                cb = self.on_state_change
+                        if cb:
+                            try:
+                                cb()
+                            except Exception:
+                                pass
+
             except Exception as e:
                 logger.error("Error executing %s command: %s", cmd_type, e)
                 if isinstance(e, dbus.DBusException):
                     self._handle_dbus_error(e)
             finally:
                 self._cmd_queue.task_done()
+
+    def _request_position_fetch(self, epoch: int) -> None:
+        """Asynchronously requests authoritative Position via background worker queue."""
+        if not self._running:
+            return
+        with self._lock:
+            if self._position_fetch_pending and self._position_fetch_epoch == epoch:
+                return
+            self._position_fetch_pending = True
+            self._position_fetch_epoch = epoch
+        try:
+            self._cmd_queue.put_nowait(("fetch_position", (epoch,)))
+        except queue.Full:
+            with self._lock:
+                self._position_fetch_pending = False
 
     def _verify_seek(
         self,
@@ -714,6 +772,10 @@ class MPRISPlayer(BasePlayer):
                 (track_id and old_track_id and track_id != old_track_id)
                 or (title_val and old_title and title_val != old_title)
             )
+            is_initial_track = (
+                not old_title
+                or old_title in ("No Track Playing", "Waiting for playback...", "Waiting for media playback...")
+            ) and bool(title_val.strip()) and title_val not in ("Unknown Track", "No Track Playing")
 
             length_raw = (
                 meta.get("mpris:length")
@@ -730,7 +792,7 @@ class MPRISPlayer(BasePlayer):
                 duration_sec = 0.0
 
             # If duration is temporarily missing during buffering for the SAME track, preserve known duration
-            if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
+            if duration_sec <= 0.0 and not (is_new_track or is_initial_track) and self._last_state.metadata.duration_seconds > 0:
                 duration_sec = self._last_state.metadata.duration_seconds
 
             art_url_val = str(meta.get("mpris:artUrl", "")) or None
@@ -746,7 +808,7 @@ class MPRISPlayer(BasePlayer):
             if duration_sec > 0:
                 self._last_state.can_seek = True
 
-            if is_new_track:
+            if is_new_track or is_initial_track:
                 # Track identity changed! Advance epoch and reset interpolator cleanly
                 self._track_epoch += 1
                 init_pos = pos_sec_reported if pos_sec_reported is not None else 0.0
@@ -763,6 +825,8 @@ class MPRISPlayer(BasePlayer):
                     epoch=self._track_epoch,
                 )
                 self._last_state.position_seconds = init_pos
+                if pos_sec_reported is None:
+                    self._request_position_fetch(self._track_epoch)
             elif pos_sec_reported is not None:
                 self._interpolator.sync(
                     pos_sec_reported,
@@ -775,8 +839,10 @@ class MPRISPlayer(BasePlayer):
                 # Metadata-only update for an existing track:
                 # Do NOT sync interpolator with stale position!
                 if duration_sec > 0:
-                    self._interpolator._duration = duration_sec
+                    self._interpolator.set_duration(duration_sec)
                 self._last_state.position_seconds = self._interpolator.get_position()
+                if self._interpolator.get_confirmed_position() == 0.0 or duration_sec > 0:
+                    self._request_position_fetch(self._track_epoch)
 
         elif pos_sec_reported is not None:
             self._interpolator.sync(
@@ -906,9 +972,11 @@ class MPRISPlayer(BasePlayer):
                             status = self._status_hold_target
                         else:
                             self._status_hold_until = 0.0
+                    meta = self._last_state.metadata if self._last_state.metadata.title else TrackMetadata()
                     state = PlayerState(
                         player_name=self.player_name or "active",
                         status=status,
+                        metadata=meta,
                         can_control=True,
                     )
                     self._last_state = state
@@ -973,15 +1041,20 @@ class MPRISPlayer(BasePlayer):
                 else:
                     self._status_hold_until = 0.0
 
+            old_title = self._last_state.metadata.title
             is_new_track = (
                 (track_id_str and self._last_state.metadata.track_id and track_id_str != self._last_state.metadata.track_id)
-                or (title_str and self._last_state.metadata.title and title_str != self._last_state.metadata.title)
+                or (title_str and old_title and title_str != old_title)
             )
+            is_initial_track = (
+                not old_title
+                or old_title in ("No Track Playing", "Waiting for playback...", "Waiting for media playback...")
+            ) and bool(title_str.strip()) and title_str not in ("Unknown Track", "No Track Playing")
 
-            if duration_sec <= 0.0 and not is_new_track and self._last_state.metadata.duration_seconds > 0:
+            if duration_sec <= 0.0 and not (is_new_track or is_initial_track) and self._last_state.metadata.duration_seconds > 0:
                 duration_sec = self._last_state.metadata.duration_seconds
 
-            if is_new_track:
+            if is_new_track or is_initial_track:
                 self._track_epoch += 1
                 self._interpolator.reset_for_new_track(
                     initial_position=position_sec,
@@ -1002,7 +1075,7 @@ class MPRISPlayer(BasePlayer):
                 position_sec,
                 status,
                 duration_sec,
-                is_authoritative=is_new_track,
+                is_authoritative=(is_new_track or is_initial_track),
                 epoch=self._track_epoch,
             )
 
