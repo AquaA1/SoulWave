@@ -882,10 +882,11 @@ def test_installer_menu_displayed_when_playerctl_missing(tmp_path):
     assert res.returncode == 0
     assert "WARNING: Recommended audio utility not found: playerctl" in res.stdout
     assert "SoulWave needs playerctl to track live music" in res.stdout
-    assert "How would you like to proceed?" in res.stdout
     assert "[1] (Recommended) Install playerctl automatically using sudo" in res.stdout
     assert "[2] Exit and install playerctl manually" in res.stdout
-    assert "Select an option [1-2] (default: 1):" in res.stdout
+    assert "[3] Skip playerctl and continue" in res.stdout
+    assert "[4] Exit installer" in res.stdout
+    assert "Select an option [1-4] (default: 1):" in res.stdout
 
 
 def test_installer_option_1_invokes_correct_package_manager_command(tmp_path):
@@ -1070,17 +1071,17 @@ def test_installer_invalid_input_prompts_again(tmp_path):
     env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
     env["SOULWAVE_READ_STDIN"] = "1"
 
-    # Provide two invalid options ('invalid', '3'), then '2'
+    # Provide two invalid options ('invalid', '99'), then '2'
     res = subprocess.run(
         [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
-        input="invalid\n3\n2\n",
+        input="invalid\n99\n2\n",
         capture_output=True,
         text=True,
         env=env,
     )
     assert res.returncode == 0
-    assert "Invalid selection: 'invalid'. Please enter 1 or 2." in res.stdout
-    assert "Invalid selection: '3'. Please enter 1 or 2." in res.stdout
+    assert "Invalid selection: 'invalid'. Please enter 1, 2, 3, or 4." in res.stdout
+    assert "Invalid selection: '99'. Please enter 1, 2, 3, or 4." in res.stdout
     assert "Manual Installation Instructions" in res.stdout
 
 
@@ -1218,6 +1219,267 @@ def test_installer_failed_dependency_installation_stops(tmp_path):
 
     # Verify SoulWave was NOT installed
     assert not (fake_home / ".local" / "bin" / "soulwave").exists()
+
+
+def test_installer_diagnostics_stage_output(tmp_path):
+    """Verify that Stage 1 System Diagnostics outputs required system parameters and indicators."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user", "--no-deps"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "Stage [1/5]: System Diagnostics" in res.stdout
+    assert "• Linux Distribution:" in res.stdout
+    assert "• CPU Architecture:" in res.stdout
+    assert "• Package Manager:" in res.stdout
+    assert "• D-Bus Session:" in res.stdout
+    assert "• Download Utility:" in res.stdout
+    assert "• Python Runtime:" in res.stdout
+    assert "• playerctl (MPRIS):" in res.stdout
+    assert "• cava (Visualizer):" in res.stdout
+    assert "• Target Directory:" in res.stdout
+    assert "• PATH Status:" in res.stdout
+
+
+def test_installer_option_3_skip_selection_installs_and_continues(tmp_path):
+    """Verify that selecting Option 3 skips playerctl, issues an informative notice, and completes installation."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "apt"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="3\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "Skipping playerctl. Live desktop music tracking will be inactive until playerctl is installed." in res.stdout
+    assert "soulwave -d" in res.stdout
+    assert "Soulwave installed successfully!" in res.stdout
+    installed_launcher = fake_home / ".local" / "bin" / "soulwave"
+    assert installed_launcher.is_file()
+
+
+def test_installer_option_4_exit_selection(tmp_path):
+    """Verify that Option 4 cancels installation and exits cleanly with 0 without leaving files."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+    mock_playerctl = tmp_path / "mock_playerctl"
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+    env["SOULWAVE_TEST_MOCK_PLAYERCTL_FILE"] = str(mock_playerctl)
+    env["SOULWAVE_TEST_PKG_MGR"] = "dnf"
+    env["SOULWAVE_FORCE_INTERACTIVE"] = "1"
+    env["SOULWAVE_READ_STDIN"] = "1"
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user"],
+        input="4\n",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode == 0
+    assert "Installation cancelled by user. Exiting installer." in res.stdout
+    assert not (fake_home / ".local" / "bin" / "soulwave").exists()
+
+
+def test_installer_package_manager_commands_all_distros():
+    """Verify package manager commands for all supported distributions (apt, dnf, pacman, zypper)."""
+    bash_script = f"""
+    source "{INSTALL_SH}"
+    for mgr in apt dnf pacman zypper; do
+        auto_pctl=$(get_playerctl_install_command "$mgr" "auto")
+        man_pctl=$(get_playerctl_install_command "$mgr" "manual")
+        auto_cava=$(get_cava_install_command "$mgr" "auto")
+        man_cava=$(get_cava_install_command "$mgr" "manual")
+        comb=$(get_combined_install_command "$mgr" "auto")
+        echo "[$mgr] auto_pctl: $auto_pctl"
+        echo "[$mgr] man_pctl: $man_pctl"
+        echo "[$mgr] auto_cava: $auto_cava"
+        echo "[$mgr] man_cava: $man_cava"
+        echo "[$mgr] comb: $comb"
+    done
+    """
+    res = subprocess.run(["bash", "-c", bash_script], capture_output=True, text=True, check=True)
+    out = res.stdout
+
+    # apt
+    assert "[apt] auto_pctl: sudo apt install -y playerctl" in out
+    assert "[apt] man_pctl: sudo apt install playerctl" in out
+    assert "[apt] auto_cava: sudo apt install -y cava" in out
+    assert "[apt] comb: sudo apt install -y playerctl cava" in out
+
+    # dnf
+    assert "[dnf] auto_pctl: sudo dnf install -y playerctl" in out
+    assert "[dnf] man_pctl: sudo dnf install playerctl" in out
+    assert "[dnf] auto_cava: sudo dnf install -y cava" in out
+    assert "[dnf] comb: sudo dnf install -y playerctl cava" in out
+
+    # pacman
+    assert "[pacman] auto_pctl: sudo pacman -S --noconfirm playerctl" in out
+    assert "[pacman] man_pctl: sudo pacman -S playerctl" in out
+    assert "[pacman] auto_cava: sudo pacman -S --noconfirm cava" in out
+    assert "[pacman] comb: sudo pacman -S --noconfirm playerctl cava" in out
+
+    # zypper
+    assert "[zypper] auto_pctl: sudo zypper install -y playerctl" in out
+    assert "[zypper] man_pctl: sudo zypper install playerctl" in out
+    assert "[zypper] auto_cava: sudo zypper install -y cava" in out
+    assert "[zypper] comb: sudo zypper install -y playerctl cava" in out
+
+
+def test_installer_uninstall_preserves_user_config_and_cache(tmp_path):
+    """Verify that uninstallation removes binaries but strictly preserves user configuration and cache."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+
+    # Pre-populate user configuration and lyrics cache
+    config_dir = fake_home / ".config" / "soulwave"
+    config_dir.mkdir(parents=True)
+    user_config_file = config_dir / "config.toml"
+    user_config_file.write_text('theme = "cyberpunk"\nfps = 20\n')
+
+    cache_dir = fake_home / ".cache" / "soulwave" / "lyrics"
+    cache_dir.mkdir(parents=True)
+    cached_lrc = cache_dir / "test_song.lrc"
+    cached_lrc.write_text("[00:01.00] Test lyric line\n")
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+
+    # 1. Install
+    res_install = subprocess.run(
+        [str(INSTALL_SH), "--file", str(mock_bin), "--user", "--no-deps"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_install.returncode == 0
+    launcher = fake_home / ".local" / "bin" / "soulwave"
+    assert launcher.is_file()
+
+    # 2. Uninstall
+    res_uninstall = subprocess.run(
+        [str(INSTALL_SH), "--uninstall"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_uninstall.returncode == 0
+    assert not launcher.exists(), "Binary must be deleted upon uninstall"
+    assert "User Data Preservation:" in res_uninstall.stdout
+    assert "User configuration (~/.config/soulwave) and cache (~/.cache/soulwave) were preserved." in res_uninstall.stdout
+
+    # Verify files still exist intact
+    assert user_config_file.is_file(), "User config file must be preserved"
+    assert "cyberpunk" in user_config_file.read_text()
+    assert cached_lrc.is_file(), "User lyrics cache must be preserved"
+    assert "Test lyric line" in cached_lrc.read_text()
+
+
+def test_installer_repair_mode(tmp_path):
+    """Verify that --repair runs the repair assistant and re-verifies installation."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    mock_bin = _make_mock_binary(tmp_path)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+
+    res_repair = subprocess.run(
+        [str(INSTALL_SH), "--repair", "--file", str(mock_bin), "--user", "--no-deps"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res_repair.returncode == 0
+    assert "Soulwave Installation Repair Assistant" in res_repair.stdout
+    assert "Stage [1/5]: System Diagnostics" in res_repair.stdout
+    assert "Soulwave repaired successfully!" in res_repair.stdout
+    assert (fake_home / ".local" / "bin" / "soulwave").is_file()
+
+
+def test_installer_invalid_local_file_rejected(tmp_path):
+    """Verify that passing an invalid local file (not .rpm, .whl, or ELF binary) is rejected cleanly."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    invalid_file = tmp_path / "invalid_package.txt"
+    invalid_file.write_text("This is an ordinary text file, not a Soulwave binary or package.")
+    # Ensure it's not executable
+    invalid_file.chmod(0o644)
+
+    env = os.environ.copy()
+    env["HOME"] = str(fake_home)
+
+    res = subprocess.run(
+        [str(INSTALL_SH), "--file", str(invalid_file), "--user"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert res.returncode != 0
+    assert "Unsupported file type for" in (res.stdout + res.stderr)
+    assert "Expected an ELF binary, .rpm, or .whl file." in (res.stdout + res.stderr)
+
+
+def test_installer_missing_version_and_file_arguments():
+    """Verify that omitting required arguments for --version and --file gives friendly error messages."""
+    # 1. Missing version arg
+    res_v = subprocess.run([str(INSTALL_SH), "--version"], capture_output=True, text=True)
+    assert res_v.returncode != 0
+    assert "Option '--version' requires a version argument" in (res_v.stdout + res_v.stderr)
+
+    # 2. Missing file arg
+    res_f = subprocess.run([str(INSTALL_SH), "--file"], capture_output=True, text=True)
+    assert res_f.returncode != 0
+    assert "Option '--file' requires a file path argument" in (res_f.stdout + res_f.stderr)
+
+
+def test_cli_doctor_command():
+    """Verify that soulwave --doctor runs the complete diagnostic report and exits with 0."""
+    res = subprocess.run(
+        [sys.executable, "-m", "soulwave.cli", "--doctor"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert res.returncode == 0, f"Doctor failed: {res.stderr}\n{res.stdout}"
+    out = res.stdout
+    assert "Soulwave Doctor — Diagnostic Report" in out
+    assert "[1] System Environment" in out
+    assert "[2] Core Runtime & UI Resources" in out
+    assert "[3] D-Bus & MPRIS Subsystem" in out
+    assert "[4] Audio Visualizer & Sound Server" in out
+    assert "[5] User Configuration & Data Storage" in out
+    assert "textual" in out
+    assert "rich" in out
+    assert "requests" in out
+    assert "syncedlyrics" in out
+    assert "styles.tcss" in out
+    assert "SYSTEM STATUS" in out
 
 
 if __name__ == "__main__":

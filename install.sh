@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# install.sh — Universal, production-ready installer for Soulwave
+# install.sh — Universal, production-ready installer and setup assistant for Soulwave
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/AquaA1/SoulWave/main/install.sh | bash
 # Options:
-#   bash install.sh [--version <v>] [--file <path>] [--binary|--rpm|--wheel] [--user|--system] [--uninstall]
+#   bash install.sh [--version <v>] [--file <path>] [--binary|--rpm|--wheel] [--user|--system] [--uninstall] [--repair]
 set -euo pipefail
 
 REPO="${SOULWAVE_REPO:-AquaA1/SoulWave}"
 TARGET_VERSION="${SOULWAVE_VERSION:-}"
 LOCAL_FILE="${SOULWAVE_FILE:-}"
 INSTALL_SCOPE="user" # user (default, rootless) or system
+INSTALL_SCOPE_EXPLICIT=0
 INSTALL_FORMAT="auto" # auto (prefers binary), binary, rpm, wheel
 NO_DEPS=0
 DO_UNINSTALL=0
+DO_REPAIR=0
 TMP_DIR=""
 LAST_INSTALLED_LAUNCHER=""
 
@@ -24,6 +26,7 @@ if [ -t 1 ]; then
     CYAN="\033[36m"
     YELLOW="\033[33m"
     RED="\033[31m"
+    DIM="\033[2m"
     RESET="\033[0m"
 else
     BOLD=""
@@ -32,6 +35,7 @@ else
     CYAN=""
     YELLOW=""
     RED=""
+    DIM=""
     RESET=""
 fi
 
@@ -44,10 +48,18 @@ log_error()   { echo -e "${RED}==> ERROR:${RESET} $*" >&2; }
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version|-v)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]] || [[ "$2" == -* ]]; then
+                log_error "Option '$1' requires a version argument (e.g. v0.1.9)."
+                exit 1
+            fi
             TARGET_VERSION="$2"
             shift 2
             ;;
         --file|-f)
+            if [ $# -lt 2 ] || [[ "$2" == --* ]] || [[ "$2" == -* ]]; then
+                log_error "Option '$1' requires a file path argument."
+                exit 1
+            fi
             LOCAL_FILE="$2"
             shift 2
             ;;
@@ -65,10 +77,12 @@ while [[ $# -gt 0 ]]; do
             ;;
         --user)
             INSTALL_SCOPE="user"
+            INSTALL_SCOPE_EXPLICIT=1
             shift
             ;;
         --system)
             INSTALL_SCOPE="system"
+            INSTALL_SCOPE_EXPLICIT=1
             shift
             ;;
         --no-deps)
@@ -79,9 +93,13 @@ while [[ $# -gt 0 ]]; do
             DO_UNINSTALL=1
             shift
             ;;
+        --repair)
+            DO_REPAIR=1
+            shift
+            ;;
         --help|-h)
             cat <<EOF
-Soulwave Installer
+Soulwave Installer & Setup Assistant
 
 USAGE:
     curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
@@ -89,13 +107,14 @@ USAGE:
 
 OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
-    --rpm                Install native RPM package (Fedora, RHEL, CentOS)
+    --rpm                Install native RPM package (Fedora, RHEL, openSUSE)
     --wheel              Install via Python wheel into isolated virtual environment
     --version, -v <tag>  Install specific release tag (e.g. v0.1.9)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)
     --no-deps            Skip dependency installation / check (for offline/custom environments)
+    --repair             Re-verify and repair existing installation without affecting user config
     --uninstall          Uninstall Soulwave cleanly from the system
     --help, -h           Show this help message
 
@@ -113,6 +132,11 @@ EOF
             ;;
     esac
 done
+
+# If running as root without explicit --user, default to system scope
+if [ "$(id -u)" -eq 0 ] && [ "${INSTALL_SCOPE_EXPLICIT}" -eq 0 ]; then
+    INSTALL_SCOPE="system"
+fi
 
 # Elevation helper
 run_elevated() {
@@ -136,7 +160,7 @@ uninstall_soulwave() {
     log_info "Uninstalling Soulwave..."
     local uninstalled=0
 
-    # 1. Remove user-level files first (rootless)
+    # 1. Remove user-level files (rootless)
     local user_bin="${HOME}/.local/bin/soulwave"
     local user_dir="${HOME}/.local/share/soulwave"
     if [ -f "${user_bin}" ]; then
@@ -150,26 +174,38 @@ uninstall_soulwave() {
         uninstalled=1
     fi
 
-    # 2. Check for system files / RPM if system scope or root or if no user installation was present
-    if [ "${INSTALL_SCOPE}" = "system" ] || [ "$(id -u)" -eq 0 ] || ([ "${uninstalled}" -eq 0 ] && [ "${INSTALL_SCOPE}" != "user" ]); then
-        # Check for native RPM install
-        if command -v rpm >/dev/null 2>&1 && rpm -q soulwave >/dev/null 2>&1; then
-            log_info "Detected RPM installation. Removing via package manager..."
-            if command -v dnf >/dev/null 2>&1; then
-                run_elevated dnf remove -y soulwave
-            else
-                run_elevated rpm -e soulwave
-            fi
-            uninstalled=1
-        fi
-
-        # Check for system standalone binary or /opt install
-        if [ -f "/usr/local/bin/soulwave" ] || [ -d "/opt/soulwave" ]; then
-            log_info "Removing system files in /usr/local/bin/soulwave and /opt/soulwave..."
-            run_elevated rm -rf "/usr/local/bin/soulwave" "/opt/soulwave"
-            uninstalled=1
-        fi
+    # 2. Check for system files /opt install and /usr/local/bin
+    local sys_bin="/usr/local/bin/soulwave"
+    local sys_dir="/opt/soulwave"
+    if [ -f "${sys_bin}" ] || [ -d "${sys_dir}" ]; then
+        log_info "Removing system files in /usr/local/bin/soulwave and /opt/soulwave..."
+        run_elevated rm -rf "${sys_bin}" "${sys_dir}"
+        uninstalled=1
     fi
+
+    # 3. Check for native RPM install
+    if command -v rpm >/dev/null 2>&1 && rpm -q soulwave >/dev/null 2>&1; then
+        log_info "Detected RPM installation. Removing via package manager..."
+        if command -v dnf >/dev/null 2>&1; then
+            run_elevated dnf remove -y soulwave
+        elif command -v zypper >/dev/null 2>&1; then
+            run_elevated zypper remove -y soulwave
+        else
+            run_elevated rpm -e soulwave
+        fi
+        uninstalled=1
+    fi
+
+    # 4. Remove /usr/bin/soulwave if remaining
+    if [ -f "/usr/bin/soulwave" ]; then
+        run_elevated rm -f "/usr/bin/soulwave"
+        uninstalled=1
+    fi
+
+    echo ""
+    log_info "User Data Preservation:"
+    echo "    User configuration (~/.config/soulwave) and cache (~/.cache/soulwave) were preserved."
+    echo ""
 
     if [ "${uninstalled}" -eq 1 ]; then
         log_success "Soulwave uninstalled successfully."
@@ -203,6 +239,7 @@ detect_arch() {
 # Detect platform and distribution
 detect_os() {
     OS_NAME="unknown"
+    OS_VERSION=""
     OS_ID="unknown"
     OS_LIKE=""
     IS_RPM_DISTRO=0
@@ -219,6 +256,7 @@ detect_os() {
         # shellcheck disable=SC1091
         . /etc/os-release
         OS_NAME="${NAME:-linux}"
+        OS_VERSION="${VERSION_ID:-${VERSION:-}}"
         OS_ID="${ID:-unknown}"
         OS_LIKE="${ID_LIKE:-}"
     elif command -v uname >/dev/null 2>&1; then
@@ -226,11 +264,11 @@ detect_os() {
     fi
 
     case "${OS_ID}" in
-        fedora|rhel|centos|rocky|almalinux)
+        fedora|rhel|centos|rocky|almalinux|opensuse*|suse|sles)
             IS_RPM_DISTRO=1
             ;;
         *)
-            if [[ "${OS_LIKE}" =~ (fedora|rhel) ]]; then
+            if [[ "${OS_LIKE}" =~ (fedora|rhel|suse) ]]; then
                 IS_RPM_DISTRO=1
             fi
             ;;
@@ -288,9 +326,14 @@ detect_package_manager() {
     fi
 
     # Check IS_RPM_DISTRO flag
-    if [ "${IS_RPM_DISTRO:-0}" -eq 1 ] && command -v dnf >/dev/null 2>&1; then
-        echo "dnf"
-        return 0
+    if [ "${IS_RPM_DISTRO:-0}" -eq 1 ]; then
+        if command -v dnf >/dev/null 2>&1; then
+            echo "dnf"
+            return 0
+        elif command -v zypper >/dev/null 2>&1; then
+            echo "zypper"
+            return 0
+        fi
     fi
 
     # Generic binary fallback
@@ -352,6 +395,86 @@ get_playerctl_install_command() {
     esac
 }
 
+# Return the appropriate command to install cava for the given package manager
+get_cava_install_command() {
+    local pkg_mgr="$1"
+    local mode="${2:-auto}"
+
+    case "${pkg_mgr}" in
+        apt)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo apt install cava"
+            else
+                echo "sudo apt install -y cava"
+            fi
+            ;;
+        dnf)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo dnf install cava"
+            else
+                echo "sudo dnf install -y cava"
+            fi
+            ;;
+        pacman)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo pacman -S cava"
+            else
+                echo "sudo pacman -S --noconfirm cava"
+            fi
+            ;;
+        zypper)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo zypper install cava"
+            else
+                echo "sudo zypper install -y cava"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+# Return combined command to install both playerctl and cava
+get_combined_install_command() {
+    local pkg_mgr="$1"
+    local mode="${2:-auto}"
+
+    case "${pkg_mgr}" in
+        apt)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo apt install playerctl cava"
+            else
+                echo "sudo apt install -y playerctl cava"
+            fi
+            ;;
+        dnf)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo dnf install playerctl cava"
+            else
+                echo "sudo dnf install -y playerctl cava"
+            fi
+            ;;
+        pacman)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo pacman -S playerctl cava"
+            else
+                echo "sudo pacman -S --noconfirm playerctl cava"
+            fi
+            ;;
+        zypper)
+            if [ "${mode}" = "manual" ]; then
+                echo "sudo zypper install playerctl cava"
+            else
+                echo "sudo zypper install -y playerctl cava"
+            fi
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 # Verify that playerctl is installed and available in PATH
 verify_playerctl() {
     if [ -n "${SOULWAVE_TEST_MOCK_PLAYERCTL_FILE:-}" ]; then
@@ -359,6 +482,15 @@ verify_playerctl() {
         return $?
     fi
     command -v playerctl >/dev/null 2>&1
+}
+
+# Verify that cava is installed and available in PATH
+verify_cava() {
+    if [ -n "${SOULWAVE_TEST_MOCK_CAVA_FILE:-}" ]; then
+        [ -f "${SOULWAVE_TEST_MOCK_CAVA_FILE}" ]
+        return $?
+    fi
+    command -v cava >/dev/null 2>&1
 }
 
 # Check if interactive input can be read
@@ -425,14 +557,145 @@ install_playerctl() {
     log_success "Successfully installed and verified playerctl!"
 }
 
-# Check system prerequisites based on installation format
-check_prerequisites() {
-    log_info "Checking system prerequisites..."
+# Execute installation of cava via detected package manager
+install_cava() {
+    local pkg_mgr="$1"
+    local install_cmd
+    install_cmd="$(get_cava_install_command "${pkg_mgr}" "auto")"
 
-    # Check for download utility
-    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-        log_error "'curl' or 'wget' is required to download release assets. Please install one of them."
-        exit 1
+    if [ -z "${install_cmd}" ]; then
+        log_warn "No automatic installation command for cava on '${pkg_mgr}'."
+        return 1
+    fi
+
+    log_info "Installing cava using: ${install_cmd}"
+    local exit_code=0
+    if [ -c /dev/tty ] && (true < /dev/tty) 2>/dev/null && [ -z "${SOULWAVE_TEST_INPUT:-}" ] && [ -z "${SOULWAVE_READ_STDIN:-}" ]; then
+        eval "${install_cmd} < /dev/tty" || exit_code=$?
+    else
+        eval "${install_cmd}" || exit_code=$?
+    fi
+
+    if [ "${exit_code}" -ne 0 ]; then
+        log_warn "Failed to install cava (command exited with code ${exit_code}). Soulwave will use built-in procedural visualizer fallback."
+        return 1
+    fi
+
+    if verify_cava; then
+        log_success "Successfully installed and verified cava!"
+        return 0
+    fi
+    return 1
+}
+
+# Stage 1: Run comprehensive system diagnostics
+run_diagnostics() {
+    local distro_str="${OS_NAME}"
+    if [ -n "${OS_VERSION:-}" ]; then
+        distro_str="${distro_str} ${OS_VERSION}"
+    fi
+
+    local pkg_mgr
+    pkg_mgr="$(detect_package_manager || echo "unknown")"
+
+    local dbus_str="[NOTICE]"
+    local dbus_desc="Not detected (headless/non-desktop session)"
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || [ -S "/run/user/$(id -u)/bus" 2>/dev/null ]; then
+        dbus_str="[  OK  ]"
+        dbus_desc="Available"
+    fi
+
+    local dl_str="[MISSING]"
+    local dl_desc="None (curl or wget required for remote install)"
+    if command -v curl >/dev/null 2>&1; then
+        dl_str="[  OK  ]"
+        dl_desc="curl ($(command -v curl))"
+    elif command -v wget >/dev/null 2>&1; then
+        dl_str="[  OK  ]"
+        dl_desc="wget ($(command -v wget))"
+    fi
+
+    local py_str="[INFO]"
+    local py_desc="Not required for standalone binary"
+    if command -v python3 >/dev/null 2>&1; then
+        local py_ver
+        py_ver="$(python3 --version 2>&1 | awk '{print $2}')"
+        if [ "${INSTALL_FORMAT}" = "wheel" ]; then
+            local py_ok
+            py_ok="$(python3 -c "import sys; print(1 if sys.version_info >= (3, 10) else 0)" 2>/dev/null || echo 0)"
+            if [ "${py_ok}" = "1" ]; then
+                py_str="[  OK  ]"
+                py_desc="Python ${py_ver} (>= 3.10 verified)"
+            else
+                py_str="[MISSING]"
+                py_desc="Python ${py_ver} (< 3.10; >= 3.10 required for wheel)"
+            fi
+        else
+            py_str="[  OK  ]"
+            py_desc="Python ${py_ver} (host detected)"
+        fi
+    elif [ "${INSTALL_FORMAT}" = "wheel" ]; then
+        py_str="[MISSING]"
+        py_desc="Python 3 not found (required for --wheel mode)"
+    fi
+
+    local pctl_str="[MISSING]"
+    local pctl_desc="Not found (recommended for live Spotify/browser media tracking)"
+    if verify_playerctl; then
+        pctl_str="[  OK  ]"
+        local pctl_bin
+        pctl_bin="$(command -v playerctl 2>/dev/null || echo "playerctl")"
+        pctl_desc="Available (${pctl_bin})"
+    fi
+
+    local cava_str="[OPTIONAL]"
+    local cava_desc="Not found (Soulwave procedural wave fallback ready)"
+    if verify_cava; then
+        cava_str="[  OK  ]"
+        local cava_bin
+        cava_bin="$(command -v cava 2>/dev/null || echo "cava")"
+        cava_desc="Available (${cava_bin} — spectrum visualizer enabled)"
+    fi
+
+    local target_dir=""
+    if [ "${INSTALL_SCOPE}" = "system" ] || [ "$(id -u)" -eq 0 ]; then
+        target_dir="/usr/local/bin"
+    else
+        target_dir="${HOME}/.local/bin"
+    fi
+    local path_str="[WARNING]"
+    local path_desc="${target_dir} is NOT in current PATH"
+    if [[ ":${PATH}:" == *":${target_dir}:"* ]]; then
+        path_str="[  OK  ]"
+        path_desc="${target_dir} is in PATH"
+    fi
+
+    echo -e "  ${BOLD}Stage [1/5]: System Diagnostics${RESET}"
+    echo "  ───────────────────────────────────────────────────────────────────"
+    printf "  %-22s %s\n" "• Linux Distribution:" "${distro_str}"
+    printf "  %-22s %s\n" "• CPU Architecture:"   "${ARCH}"
+    printf "  %-22s %s\n" "• Package Manager:"    "${pkg_mgr}"
+    printf "  %-22s %-32s %s\n" "• D-Bus Session:"     "${dbus_desc}" "${dbus_str}"
+    printf "  %-22s %-32s %s\n" "• Download Utility:"  "${dl_desc}"   "${dl_str}"
+    printf "  %-22s %-32s %s\n" "• Python Runtime:"    "${py_desc}"   "${py_str}"
+    printf "  %-22s %-32s %s\n" "• playerctl (MPRIS):" "${pctl_desc}" "${pctl_str}"
+    printf "  %-22s %-32s %s\n" "• cava (Visualizer):" "${cava_desc}" "${cava_str}"
+    printf "  %-22s %s\n" "• Target Directory:"    "${target_dir}/soulwave"
+    printf "  %-22s %-32s %s\n" "• PATH Status:"       "${path_desc}" "${path_str}"
+    echo "  ───────────────────────────────────────────────────────────────────"
+    echo ""
+}
+
+# Check system prerequisites and resolve dependencies interactively
+check_prerequisites() {
+    log_info "Stage [2/5]: Dependency Resolution..."
+
+    # Check download utility if not installing from local file
+    if [ -z "${LOCAL_FILE}" ]; then
+        if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+            log_error "'curl' or 'wget' is required to download release assets. Please install one of them."
+            exit 1
+        fi
     fi
 
     # If user explicitly forced wheel mode, check python requirements
@@ -456,16 +719,31 @@ check_prerequisites() {
         return 0
     fi
 
-    # Check playerctl dependency
-    if ! verify_playerctl; then
-        local pkg_mgr
-        pkg_mgr="$(detect_package_manager || echo "unknown")"
-        local manual_cmd
-        manual_cmd="$(get_playerctl_install_command "${pkg_mgr}" "manual")"
-        if [ -z "${manual_cmd}" ]; then
-            manual_cmd="sudo <package-manager> install playerctl"
-        fi
+    local has_playerctl=0
+    if verify_playerctl; then
+        has_playerctl=1
+    fi
 
+    local has_cava=0
+    if verify_cava; then
+        has_cava=1
+    fi
+
+    if [ "${has_playerctl}" -eq 1 ] && [ "${has_cava}" -eq 1 ]; then
+        log_success "All recommended and optional audio utilities found (playerctl, cava)."
+        return 0
+    fi
+
+    local pkg_mgr
+    pkg_mgr="$(detect_package_manager || echo "unknown")"
+    local manual_cmd
+    manual_cmd="$(get_playerctl_install_command "${pkg_mgr}" "manual")"
+    if [ -z "${manual_cmd}" ]; then
+        manual_cmd="sudo <package-manager> install playerctl"
+    fi
+
+    # Handle missing playerctl
+    if [ "${has_playerctl}" -eq 0 ]; then
         log_warn "Recommended audio utility not found: playerctl"
         echo ""
         echo "    SoulWave needs playerctl to track live music across Spotify,"
@@ -500,6 +778,8 @@ check_prerequisites() {
         echo ""
         echo "    [1] (Recommended) Install playerctl automatically using sudo"
         echo "    [2] Exit and install playerctl manually"
+        echo "    [3] Skip playerctl and continue (SoulWave will run in demo/fallback mode)"
+        echo "    [4] Exit installer"
         echo ""
 
         local tty_in="/dev/tty"
@@ -509,7 +789,7 @@ check_prerequisites() {
 
         local choice=""
         while true; do
-            printf "  Select an option [1-2] (default: 1): "
+            printf "  Select an option [1-4] (default: 1): "
             if ! read -r choice < "${tty_in}"; then
                 echo ""
                 log_error "Installation cancelled by user."
@@ -522,14 +802,20 @@ check_prerequisites() {
             elif [ "${choice}" = "2" ]; then
                 choice="2"
                 break
+            elif [ "${choice}" = "3" ]; then
+                choice="3"
+                break
+            elif [ "${choice}" = "4" ]; then
+                choice="4"
+                break
             else
-                echo "Invalid selection: '${choice}'. Please enter 1 or 2."
+                echo "Invalid selection: '${choice}'. Please enter 1, 2, 3, or 4."
             fi
         done
 
         if [ "${choice}" = "1" ]; then
             install_playerctl "${pkg_mgr}"
-        else
+        elif [ "${choice}" = "2" ]; then
             echo ""
             log_info "Manual Installation Instructions"
             echo ""
@@ -543,11 +829,20 @@ check_prerequisites() {
             echo ""
             log_info "Exiting installer."
             exit 0
+        elif [ "${choice}" = "3" ]; then
+            echo ""
+            log_warn "Skipping playerctl. Live desktop music tracking will be inactive until playerctl is installed."
+            echo "    (Soulwave can still be launched with 'soulwave -d' for built-in demo music and lyrics!)"
+            echo ""
+        elif [ "${choice}" = "4" ]; then
+            echo ""
+            log_info "Installation cancelled by user. Exiting installer."
+            exit 0
         fi
     fi
 
-    # Check optional visualizer utility (cava)
-    if ! command -v cava >/dev/null 2>&1; then
+    # Check optional visualizer utility (cava) if still missing
+    if ! verify_cava; then
         log_info "Note: Audio visualizer utility 'cava' not found."
         echo "    Soulwave will use its built-in visualizer fallback."
         echo "    (Optional) Install cava to enable real-time hardware spectrum analysis."
@@ -704,7 +999,7 @@ fetch_release_assets() {
         chosen_url="$(grep -E "^${bin_pattern}" "${parsed_result}" | head -n 1 | awk '{print $2}' || true)"
     fi
 
-    # 4. Fallback if binary asset wasn't found (e.g. earlier releases only having wheel/rpm)
+    # 4. Fallback if binary asset wasn't found
     if [ -z "${CHOSEN_ASSET}" ]; then
         if [ "${IS_RPM_DISTRO}" -eq 1 ]; then
             CHOSEN_ASSET="$(grep -E "\.rpm[[:space:]]" "${parsed_result}" | head -n 1 | awk '{print $1}' || true)"
@@ -721,7 +1016,7 @@ fetch_release_assets() {
         exit 1
     fi
 
-    log_info "Downloading ${CHOSEN_ASSET}..."
+    log_info "Stage [3/5]: Downloading ${CHOSEN_ASSET}..."
     if ! fetch_file "${chosen_url}" "${tmp_dir}/${CHOSEN_ASSET}"; then
         log_error "Failed to download asset ${CHOSEN_ASSET} from ${chosen_url}."
         exit 1
@@ -821,10 +1116,12 @@ install_rpm() {
 
     if command -v dnf >/dev/null 2>&1; then
         run_elevated dnf install -y "${rpm_file}"
+    elif command -v zypper >/dev/null 2>&1; then
+        run_elevated zypper install -y "${rpm_file}"
     elif command -v rpm >/dev/null 2>&1; then
         run_elevated rpm -Uvh --force "${rpm_file}"
     else
-        log_error "Neither dnf nor rpm found to install RPM package."
+        log_error "Neither dnf, zypper nor rpm found to install RPM package."
         exit 1
     fi
     LAST_INSTALLED_LAUNCHER="/usr/bin/soulwave"
@@ -926,14 +1223,20 @@ EOF
 
 main() {
     echo -e "${CYAN}${BOLD}"
-    echo "  ╔═══════════════════════════════════════════╗"
-    echo "  ║          Soulwave Installer               ║"
-    echo "  ╚═══════════════════════════════════════════╝"
+    echo "  ╔═══════════════════════════════════════════════════════════════════╗"
+    if [ "${DO_REPAIR}" -eq 1 ]; then
+        echo "  ║              Soulwave Installation Repair Assistant               ║"
+    else
+        echo "  ║                  Soulwave Linux Setup Assistant                   ║"
+    fi
+    echo "  ╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
 
     detect_arch
     detect_os
     log_info "Detected OS: ${BOLD}${OS_NAME}${RESET} (${ARCH})"
+
+    run_diagnostics
 
     check_prerequisites
 
@@ -946,6 +1249,35 @@ main() {
             log_error "Specified local file not found: ${LOCAL_FILE}"
             exit 1
         fi
+        if [ ! -r "${LOCAL_FILE}" ]; then
+            log_error "Specified local file is not readable: ${LOCAL_FILE}"
+            exit 1
+        fi
+
+        # Validate local file type
+        case "${LOCAL_FILE}" in
+            *.rpm|*.whl)
+                ;;
+            *)
+                local is_valid_bin=0
+                if [ -x "${LOCAL_FILE}" ]; then
+                    is_valid_bin=1
+                elif command -v file >/dev/null 2>&1 && file "${LOCAL_FILE}" | grep -qiE "ELF|executable|script"; then
+                    is_valid_bin=1
+                else
+                    local magic
+                    magic="$(head -c 4 "${LOCAL_FILE}" 2>/dev/null || true)"
+                    if [[ "${magic}" == *ELF* ]] || [[ "${magic}" == *'#!'* ]]; then
+                        is_valid_bin=1
+                    fi
+                fi
+                if [ "${is_valid_bin}" -eq 0 ]; then
+                    log_error "Unsupported file type for '${LOCAL_FILE}'. Expected an ELF binary, .rpm, or .whl file."
+                    exit 1
+                fi
+                ;;
+        esac
+
         log_info "Installing from local file: ${BOLD}${LOCAL_FILE}${RESET}"
         log_warn "Local-file mode trusts the specified file on disk without remote checksum verification."
         package_file="${LOCAL_FILE}"
@@ -958,6 +1290,7 @@ main() {
         fi
     fi
 
+    log_info "Stage [4/5]: Installing Soulwave package..."
     # Determine installer route by file extension/format
     case "${package_file}" in
         *.rpm)
@@ -976,17 +1309,17 @@ main() {
     if [ "${NO_DEPS}" -eq 1 ]; then
         log_warn "Installed with --no-deps. Skipping full runtime health check."
     else
-        log_info "Verifying installed Soulwave runtime and resources..."
+        log_info "Stage [5/5]: Verifying installed Soulwave runtime and resources..."
         local launcher_to_check="${LAST_INSTALLED_LAUNCHER:-}"
         if [ -z "${launcher_to_check}" ] || [ ! -x "${launcher_to_check}" ]; then
-            if command -v soulwave >/dev/null 2>&1; then
-                launcher_to_check="$(command -v soulwave)"
-            elif [ -x "${HOME}/.local/bin/soulwave" ]; then
+            if [ -x "${HOME}/.local/bin/soulwave" ] && [ "${INSTALL_SCOPE}" = "user" ]; then
                 launcher_to_check="${HOME}/.local/bin/soulwave"
             elif [ -x "/usr/local/bin/soulwave" ]; then
                 launcher_to_check="/usr/local/bin/soulwave"
             elif [ -x "/usr/bin/soulwave" ]; then
                 launcher_to_check="/usr/bin/soulwave"
+            elif command -v soulwave >/dev/null 2>&1; then
+                launcher_to_check="$(command -v soulwave)"
             fi
         fi
 
@@ -1007,13 +1340,19 @@ main() {
     fi
 
     echo ""
-    log_success "Soulwave installed successfully!"
+    if [ "${DO_REPAIR}" -eq 1 ]; then
+        log_success "Soulwave repaired successfully!"
+    else
+        log_success "Soulwave installed successfully!"
+    fi
     echo -e "  To launch Soulwave, simply run:  ${GREEN}${BOLD}soulwave${RESET}"
+    echo -e "  To run system diagnostics:      ${CYAN}soulwave --doctor${RESET}"
     echo -e "  For help and keybindings:        ${CYAN}soulwave --help${RESET}"
+    echo -e "  To repair anytime:               ${YELLOW}install.sh --repair${RESET}"
     echo -e "  To uninstall anytime:            ${YELLOW}install.sh --uninstall${RESET}"
     echo ""
 
-    if ! command -v playerctl >/dev/null 2>&1; then
+    if ! verify_playerctl; then
         local distro_cmd="sudo apt install playerctl"
         if [ "${IS_RPM_DISTRO:-0}" -eq 1 ]; then
             distro_cmd="sudo dnf install playerctl"
