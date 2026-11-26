@@ -550,11 +550,15 @@ class MPRISPlayer(BasePlayer):
                         cb = None
                         with self._lock:
                             if self._running and epoch == self._track_epoch:
+                                is_auth = (
+                                    self._interpolator.get_confirmed_position() == 0.0
+                                    or self._interpolator._status != self._last_state.status
+                                )
                                 self._interpolator.sync(
                                     pos_s,
                                     self._last_state.status,
                                     self._last_state.metadata.duration_seconds,
-                                    is_authoritative=True,
+                                    is_authoritative=is_auth,
                                     epoch=epoch,
                                 )
                                 self._last_state.position_seconds = self._interpolator.get_position()
@@ -754,15 +758,20 @@ class MPRISPlayer(BasePlayer):
     # --- Property Parsing ---
 
     def _apply_dbus_properties(self, props: dict) -> None:
+        status_changed = False
         if "PlaybackStatus" in props:
             parsed = self._parse_status(str(props["PlaybackStatus"]))
             now = time.monotonic()
             if now < self._status_hold_until:
                 if parsed == self._status_hold_target:
                     self._status_hold_until = 0.0
-                    self._last_state.status = parsed
+                    if self._last_state.status != parsed:
+                        self._last_state.status = parsed
+                        status_changed = True
             else:
-                self._last_state.status = parsed
+                if self._last_state.status != parsed:
+                    self._last_state.status = parsed
+                    status_changed = True
 
         if "CanSeek" in props:
             self._last_state.can_seek = bool(props["CanSeek"])
@@ -904,10 +913,22 @@ class MPRISPlayer(BasePlayer):
                 self._last_state.position_seconds = pos_sec_reported
             else:
                 # Metadata-only update for an existing track:
-                # Do NOT sync interpolator with stale position!
                 if duration_sec > 0:
                     self._interpolator.set_duration(duration_sec)
-                self._last_state.position_seconds = self._interpolator.get_position()
+                if status_changed or self._interpolator._status != self._last_state.status:
+                    cur_pos = self._interpolator.get_position()
+                    self._interpolator.sync(
+                        cur_pos,
+                        self._last_state.status,
+                        duration_sec,
+                        is_authoritative=True,
+                        epoch=self._track_epoch,
+                    )
+                    self._last_state.position_seconds = cur_pos
+                    if self._last_state.status == PlaybackStatus.PLAYING:
+                        self._request_position_fetch(self._track_epoch)
+                else:
+                    self._last_state.position_seconds = self._interpolator.get_position()
                 if self._interpolator.get_confirmed_position() == 0.0 or duration_sec > 0:
                     self._request_position_fetch(self._track_epoch)
 
@@ -916,9 +937,26 @@ class MPRISPlayer(BasePlayer):
                 pos_sec_reported,
                 self._last_state.status,
                 self._last_state.metadata.duration_seconds,
+                is_authoritative=status_changed,
                 epoch=self._track_epoch,
             )
             self._last_state.position_seconds = pos_sec_reported
+            if status_changed and self._last_state.status == PlaybackStatus.PLAYING:
+                self._request_position_fetch(self._track_epoch)
+        else:
+            # Neither Metadata nor Position was reported (e.g. PlaybackStatus signal only)
+            if status_changed or self._interpolator._status != self._last_state.status:
+                cur_pos = self._interpolator.get_position()
+                self._interpolator.sync(
+                    cur_pos,
+                    self._last_state.status,
+                    self._last_state.metadata.duration_seconds,
+                    is_authoritative=True,
+                    epoch=self._track_epoch,
+                )
+                self._last_state.position_seconds = cur_pos
+                if self._last_state.status == PlaybackStatus.PLAYING:
+                    self._request_position_fetch(self._track_epoch)
 
     # --- State and Control Methods ---
 
@@ -1005,6 +1043,22 @@ class MPRISPlayer(BasePlayer):
                 self._last_state.position_seconds = 0.0
                 self._last_state.player_name = self.player_name or ""
             else:
+                if self._interpolator._status != self._last_state.status:
+                    self._interpolator.sync(
+                        self._last_state.position_seconds,
+                        self._last_state.status,
+                        self._last_state.metadata.duration_seconds,
+                        is_authoritative=True,
+                        epoch=self._track_epoch,
+                    )
+                if self.use_dbus and self._props_iface and self._last_state.status == PlaybackStatus.PLAYING:
+                    now = time.monotonic()
+                    if not hasattr(self, "_last_periodic_fetch_time"):
+                        self._last_periodic_fetch_time = 0.0
+                    if now - self._last_periodic_fetch_time > 2.0:
+                        self._last_periodic_fetch_time = now
+                        self._request_position_fetch(self._track_epoch)
+
                 pos = self._interpolator.get_position()
                 self._last_state.position_seconds = pos
                 self._last_state.player_name = self.player_name or ""

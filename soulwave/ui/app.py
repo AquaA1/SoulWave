@@ -327,7 +327,6 @@ class SoulwaveApp(App):
         ) and not (meta.title == "Firefox is playing media" and meta.duration_seconds <= 0.0)
 
         if not is_connected or not has_real_track:
-            self._known_durations.pop(track_key, None)
             meta.duration_seconds = 0.0
             state.position_seconds = 0.0
             self.progress_bar_view.update_progress(0.0, 0.0, self.accent_color)

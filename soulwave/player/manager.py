@@ -249,10 +249,5 @@ class PlayerManager:
             if not self._current_player:
                 return PlayerState(status=PlaybackStatus.DISCONNECTED)
 
-            state = self._current_player.get_state()
-            if state.status == PlaybackStatus.DISCONNECTED:
-                if self._active_player_name:
-                    self._active_player_name = ""
-
-            return state
+            return self._current_player.get_state()
 
