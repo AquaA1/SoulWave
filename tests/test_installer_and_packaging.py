@@ -205,9 +205,9 @@ def test_install_script_user_binary_and_uninstall(tmp_path):
     env = os.environ.copy()
     env["HOME"] = str(fake_home)
 
-    # 1. Install using --user and --file <binary>
+    # 1. Install using --user, --file <binary>, and --no-deps
     res_install = subprocess.run(
-        [str(INSTALL_SH), "--file", str(fake_bin), "--user"],
+        [str(INSTALL_SH), "--file", str(fake_bin), "--user", "--no-deps"],
         capture_output=True,
         text=True,
         env=env,

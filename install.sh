@@ -1232,18 +1232,6 @@ main() {
     echo "  ╚═══════════════════════════════════════════════════════════════════╝"
     echo -e "${RESET}"
 
-    detect_arch
-    detect_os
-    log_info "Detected OS: ${BOLD}${OS_NAME}${RESET} (${ARCH})"
-
-    run_diagnostics
-
-    check_prerequisites
-
-    TMP_DIR="$(mktemp -d -t soulwave-install-XXXXXX)"
-    trap 'rm -rf "${TMP_DIR:-}"' EXIT INT TERM
-
-    local package_file=""
     if [ -n "${LOCAL_FILE}" ]; then
         if [ ! -f "${LOCAL_FILE}" ]; then
             log_error "Specified local file not found: ${LOCAL_FILE}"
@@ -1277,7 +1265,21 @@ main() {
                 fi
                 ;;
         esac
+    fi
 
+    detect_arch
+    detect_os
+    log_info "Detected OS: ${BOLD}${OS_NAME}${RESET} (${ARCH})"
+
+    run_diagnostics
+
+    check_prerequisites
+
+    TMP_DIR="$(mktemp -d -t soulwave-install-XXXXXX)"
+    trap 'rm -rf "${TMP_DIR:-}"' EXIT INT TERM
+
+    local package_file=""
+    if [ -n "${LOCAL_FILE}" ]; then
         log_info "Installing from local file: ${BOLD}${LOCAL_FILE}${RESET}"
         log_warn "Local-file mode trusts the specified file on disk without remote checksum verification."
         package_file="${LOCAL_FILE}"
