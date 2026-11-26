@@ -273,3 +273,10 @@ class LyricsClient:
 
         t = threading.Thread(target=worker, daemon=True, name=f"LyricsFetch-{track_key[:15]}")
         t.start()
+
+    def cancel_requests(self) -> None:
+        """Invalidates all currently active or in-flight lyrics requests."""
+        with self._lock:
+            self._latest_request_id += 1
+            self._active_requests.clear()
+

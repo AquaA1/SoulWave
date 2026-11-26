@@ -337,6 +337,7 @@ class SoulwaveApp(App):
             self._loaded_lyrics_track_key = ""
             self._fetching_lyrics_track_key = ""
             self._auto_dance_active = False
+            self.lyrics_client.cancel_requests()
             self.lyrics_view.cancel_countdown()
 
             if not is_connected or not has_real_track:
@@ -345,8 +346,7 @@ class SoulwaveApp(App):
                 self.lyrics_view.refresh()
             else:
                 self.lyrics_view.is_waiting = False
-                self.lyrics_view.set_lyrics(None, None, duration=meta.duration_seconds)
-                self.lyrics_view.set_loading()
+                self.lyrics_view.set_searching()
 
             if self.config.show_lyrics:
                 self.lyrics_view.display = True
@@ -417,8 +417,8 @@ class SoulwaveApp(App):
         )
 
         # Update lyrics scrolling or companion dance view
+        energy = getattr(self.visualizer_view, "current_energy", 0.0)
         if self.companion_view.display:
-            energy = getattr(self.visualizer_view, "current_energy", 0.0)
             self.companion_view.update_state(
                 is_playing=is_playing,
                 is_paused=is_paused,
@@ -430,6 +430,9 @@ class SoulwaveApp(App):
                 pos,
                 self.accent_color,
                 self._last_state.metadata.duration_seconds,
+                is_playing=is_playing,
+                is_paused=is_paused,
+                energy=energy,
             )
 
         # Update visualizer
@@ -468,7 +471,7 @@ class SoulwaveApp(App):
             return
 
         self._fetching_lyrics_track_key = current_key
-        self.lyrics_view.set_loading()
+        self.lyrics_view.set_searching()
 
         def on_lyrics_fetched(data: dict | None) -> None:
             current_key = f"{self._last_state.metadata.artist}::{self._last_state.metadata.title}"
@@ -512,49 +515,33 @@ class SoulwaveApp(App):
                     )
                     if self.config.show_lyrics:
                         pos = self.player_manager.current_player.get_interpolated_position()
+                        energy = getattr(self.visualizer_view, "current_energy", 0.0)
                         self.lyrics_view.update_position(
                             pos,
                             self.accent_color,
                             self._last_state.metadata.duration_seconds,
+                            is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                            is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                            energy=energy,
                         )
 
                 self.call_from_thread(apply_lyrics)
             else:
                 def trigger_no_lyrics_fallback():
-                    if self._no_lyrics_track_key == current_key and (self.lyrics_view.is_countdown_active or self._auto_dance_active):
-                        return
-                    self._no_lyrics_track_key = current_key
-
-                    def on_countdown_done():
-                        if self.config.show_lyrics:
-                            self._auto_dance_active = True
-                            self.lyrics_view.display = False
-                            self.companion_view.display = True
-                            energy = getattr(self.visualizer_view, "current_energy", 0.0)
-                            self.companion_view.update_state(
-                                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
-                                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
-                                accent=self.accent_color,
-                                energy=energy,
-                            )
-
-                    if self.config.show_lyrics:
-                        self.lyrics_view.start_no_lyrics_countdown(
-                            on_complete=on_countdown_done,
-                            countdown_seconds=5,
-                        )
-                    else:
-                        self.lyrics_view.set_lyrics(None, None, duration=self._last_state.metadata.duration_seconds)
+                    self.lyrics_view.set_not_found()
 
                 self.call_from_thread(trigger_no_lyrics_fallback)
 
-        self.lyrics_client.fetch_lyrics_async(
-            artist=artist,
-            title=title,
-            album=album,
-            duration=duration,
-            callback=on_lyrics_fetched,
-        )
+        try:
+            self.lyrics_client.fetch_lyrics_async(
+                artist=artist,
+                title=title,
+                album=album,
+                duration=duration,
+                callback=on_lyrics_fetched,
+            )
+        except Exception:
+            self.lyrics_view.set_not_found()
 
     # --- Actions / Keybinding Handlers ---
 
@@ -591,10 +578,14 @@ class SoulwaveApp(App):
             self.accent_color,
         )
         if self.config.show_lyrics:
+            energy = getattr(self.visualizer_view, "current_energy", 0.0)
             self.lyrics_view.update_position(
                 pos,
                 self.accent_color,
                 self._last_state.metadata.duration_seconds,
+                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                energy=energy,
             )
 
     def action_seek_backward(self) -> None:
@@ -607,10 +598,14 @@ class SoulwaveApp(App):
             self.accent_color,
         )
         if self.config.show_lyrics:
+            energy = getattr(self.visualizer_view, "current_energy", 0.0)
             self.lyrics_view.update_position(
                 pos,
                 self.accent_color,
                 self._last_state.metadata.duration_seconds,
+                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                energy=energy,
             )
 
     def action_volume_up(self) -> None:
@@ -643,17 +638,8 @@ class SoulwaveApp(App):
 
     def action_toggle_lyrics(self) -> None:
         self.config.show_lyrics = not self.config.show_lyrics
-        if self._auto_dance_active:
-            if self.config.show_lyrics:
-                self._auto_dance_active = False
-                self.lyrics_view.display = True
-                self.companion_view.display = False
-            else:
-                self.lyrics_view.display = False
-                self.companion_view.display = True
-        else:
-            self.lyrics_view.display = self.config.show_lyrics
-            self.companion_view.display = not self.config.show_lyrics
+        self.lyrics_view.display = self.config.show_lyrics
+        self.companion_view.display = not self.config.show_lyrics
 
         if not self.lyrics_view.display:
             energy = getattr(self.visualizer_view, "current_energy", 0.0)
@@ -670,10 +656,14 @@ class SoulwaveApp(App):
             if self._loaded_lyrics_track_key != current_key and bool(meta.title.strip()):
                 self._load_lyrics_for_track(meta.artist, meta.title, meta.album, meta.duration_seconds)
             pos = self.player_manager.current_player.get_interpolated_position()
+            energy = getattr(self.visualizer_view, "current_energy", 0.0)
             self.lyrics_view.update_position(
                 pos,
                 self.accent_color,
                 self._last_state.metadata.duration_seconds,
+                is_playing=(self._last_state.status == PlaybackStatus.PLAYING),
+                is_paused=(self._last_state.status == PlaybackStatus.PAUSED),
+                energy=energy,
             )
             self.lyrics_view.refresh()
 

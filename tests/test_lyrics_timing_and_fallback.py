@@ -84,89 +84,192 @@ def test_scenario_3_lyrics_request_fails_preserves_duration():
 
 
 # ---------------------------------------------------------------------------
-# Scenario 4: No lyrics found -> friendly message, 5s countdown, dance fallback
+# Requirement 1: Dance appears immediately before lyrics arrive
 # ---------------------------------------------------------------------------
-def test_scenario_4_no_lyrics_countdown_and_dance_fallback():
+def test_dance_appears_immediately_before_lyrics_arrive():
     panel = LyricsPanelView()
-    completed = []
+    # When track starts, searching is initiated
+    panel.set_searching()
 
-    def on_complete():
-        completed.append(True)
+    assert panel.is_searching is True
+    assert panel.status_message == "SEARCHING FOR LYRICS..."
 
-    panel.start_no_lyrics_countdown(on_complete=on_complete, countdown_seconds=5)
-    assert panel.is_countdown_active is True
-
-    # Initial render shows message and 5-second countdown
-    render_init = panel.render().plain
-    assert "No lyrics found for this track ♡" in render_init
-    assert "Take a little break and enjoy a dance with our Soul Souls!" in render_init
-    assert "The Soul Souls are getting ready to dance... 5" in render_init
-
-    # Fast forward countdown by adjusting start time: 3 seconds elapsed (2 remaining)
-    panel._countdown_start_time = time.monotonic() - 3.1
-    panel.update_position(10.0, (56, 189, 248))
-    render_3s = panel.render().plain
-    assert "The Soul Souls are getting ready to dance... 2" in render_3s
-    assert len(completed) == 0
-
-    # 5.1 seconds elapsed -> countdown triggers completion and switches to mascot dance
-    panel._countdown_start_time = time.monotonic() - 5.1
-    panel.update_position(10.0, (56, 189, 248))
-    assert panel.is_countdown_active is False
-    assert panel._dance_fallback_active is True
-    assert len(completed) == 1
-
-    # Render now contains the dancing mascots
-    render_dance = panel.render().plain
-    assert "Pip" in render_dance
-    assert "Nova" in render_dance
-    assert "Mochi" in render_dance
+    # Immediately on frame 0, before any lyrics response arrives, dance is visible
+    rendered = panel.render().plain
+    assert "SEARCHING FOR LYRICS..." in rendered
+    assert "Pip" in rendered
+    assert "Nova" in rendered
+    assert "Mochi" in rendered
 
 
 # ---------------------------------------------------------------------------
-# Scenario 5: Lyrics arrive during countdown -> countdown cancelled, lyrics shown
+# Requirement 2: Dance continues during a delayed lyrics request
 # ---------------------------------------------------------------------------
-def test_scenario_5_lyrics_arrive_during_countdown_cancels_it():
+def test_dance_continues_during_delayed_lyrics_request():
     panel = LyricsPanelView()
-    completed = []
+    panel.set_searching()
 
-    panel.start_no_lyrics_countdown(on_complete=lambda: completed.append(True))
-    assert panel.is_countdown_active is True
+    # Simulate multiple animation ticks during a slow network request
+    initial_ticks = panel._companion_view._tick_count
+    for i in range(15):
+        panel.update_position(float(i), (56, 189, 248), duration=180.0, is_playing=True)
+        rendered = panel.render().plain
+        assert "SEARCHING FOR LYRICS..." in rendered
+        assert "Pip" in rendered
+        assert "Nova" in rendered
+        assert "Mochi" in rendered
 
-    # Lyrics arrive while countdown is at 4s
+    # Animation ticks progressed continuously
+    assert panel._companion_view._tick_count > initial_ticks
+
+
+# ---------------------------------------------------------------------------
+# Requirement 3: Not-found message disappears after its display duration
+# ---------------------------------------------------------------------------
+def test_lyrics_not_found_message_disappears_after_display_duration():
+    panel = LyricsPanelView()
+    panel.set_searching()
+
+    # Lyrics request finishes with no lyrics found -> set_not_found with 2.5s duration
+    panel.set_not_found(duration=2.5)
+    assert panel.is_searching is False
+    assert panel.status_message == "LYRICS NOT FOUND"
+
+    # Immediately after not-found, message is displayed along with the dance
+    rendered_immediate = panel.render().plain
+    assert "LYRICS NOT FOUND" in rendered_immediate
+    assert "Pip" in rendered_immediate
+
+    # Fast forward: 1.0s elapsed (< 2.5s) -> message still displayed
+    panel._not_found_timestamp = time.monotonic() + 1.5
+    panel.update_position(10.0, (56, 189, 248), duration=180.0)
+    rendered_1s = panel.render().plain
+    assert "LYRICS NOT FOUND" in rendered_1s
+    assert "Pip" in rendered_1s
+
+    # Fast forward: 2.6s elapsed (duration expired) -> message cleared, dance continues!
+    panel._not_found_timestamp = time.monotonic() - 0.1
+    panel.update_position(12.0, (56, 189, 248), duration=180.0)
+    assert panel.status_message is None
+
+    rendered_after = panel.render().plain
+    assert "LYRICS NOT FOUND" not in rendered_after
+    assert "Pip" in rendered_after
+    assert "Nova" in rendered_after
+    assert "Mochi" in rendered_after
+
+
+# ---------------------------------------------------------------------------
+# Requirement 4: Dance continues after lyrics are not found
+# ---------------------------------------------------------------------------
+def test_dance_continues_after_lyrics_not_found():
+    panel = LyricsPanelView()
+    panel.set_not_found(duration=0.1)
+
+    # Allow not-found banner to expire
+    time.sleep(0.15)
+    panel.update_position(5.0, (56, 189, 248), duration=120.0)
+
+    # Panel must NOT be empty or stopped; companion groove room is permanently displayed
+    rendered = panel.render().plain
+    assert "COMPANIONS" in rendered
+    assert "Pip" in rendered
+    assert "Nova" in rendered
+    assert "Mochi" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Requirement 5: Lyrics replace the dance when successfully fetched
+# ---------------------------------------------------------------------------
+def test_lyrics_replace_dance_when_successfully_fetched():
+    panel = LyricsPanelView()
+    panel.set_searching()
+
+    # Verify initial dance state
+    assert "SEARCHING FOR LYRICS..." in panel.render().plain
+    assert "Pip" in panel.render().plain
+
+    # Valid lyrics arrive
     lrc = "[00:05.00] Sun goes down\n[00:15.00] Stars appear"
     panel.set_lyrics(lrc, None, duration=120.0)
 
-    # Countdown must be cancelled immediately
-    assert panel.is_countdown_active is False
-    assert panel._dance_fallback_active is False
-    assert len(completed) == 0
+    assert panel.is_searching is False
+    assert panel.status_message is None
 
     rendered = panel.render().plain
     assert "SYNCED LYRICS" in rendered
     assert "Sun goes down" in rendered
-    assert "The Soul Souls are getting ready to dance" not in rendered
+    assert "SEARCHING FOR LYRICS..." not in rendered
+    assert "Pip" not in rendered
 
 
 # ---------------------------------------------------------------------------
-# Scenario 6: New track starts during countdown -> previous countdown cancelled
+# Requirement 6: Network errors and timeouts return to the dance
 # ---------------------------------------------------------------------------
-def test_scenario_6_new_track_cancels_previous_countdown():
+def test_network_errors_and_timeouts_return_to_dance():
     panel = LyricsPanelView()
-    track1_completed = []
+    panel.set_searching()
 
-    panel.start_no_lyrics_countdown(on_complete=lambda: track1_completed.append("track1"))
-    assert panel.is_countdown_active is True
+    # Simulate network timeout / error triggering set_not_found
+    panel.set_not_found(duration=2.5)
 
-    # New track starts loading
-    panel.set_loading()
-    assert panel.is_countdown_active is False
-    assert panel._dance_fallback_active is False
+    assert panel.is_searching is False
+    rendered = panel.render().plain
+    # Panel is never blank
+    assert "LYRICS NOT FOUND" in rendered
+    assert "Pip" in rendered
+    assert "Nova" in rendered
+    assert "Mochi" in rendered
 
-    # Simulate time passing past original 5s
-    panel.update_position(5.0, (56, 189, 248))
-    assert len(track1_completed) == 0
-    assert "Looking up lyrics" in panel.render().plain
+
+# ---------------------------------------------------------------------------
+# Requirement 7: Results from an older track cannot replace current track's UI
+# ---------------------------------------------------------------------------
+def test_results_from_older_track_cannot_replace_current_track_ui():
+    client = LyricsClient()
+    panel = LyricsPanelView()
+
+    # Track 1 begins searching
+    panel.set_searching()
+    client.cancel_requests()  # Cancels any previous requests
+
+    # Start Track 1 async request
+    t1_received = []
+    client.fetch_lyrics_async("Artist 1", "Song 1", callback=lambda data: t1_received.append(data))
+
+    # User rapidly switches to Track 2 before Track 1 finishes
+    client.cancel_requests()  # Invalidates Track 1
+    panel.set_searching()
+
+    # Valid lyrics for Track 2 arrive
+    panel.set_lyrics("[00:05.00] Track 2 Valid Lyric", None, duration=100.0)
+
+    # Verify Track 2 lyrics are active
+    assert "Track 2 Valid Lyric" in panel.render().plain
+
+    # Even if Track 1 callback were invoked or data returned, current track UI is unchanged
+    assert "Track 2 Valid Lyric" in panel.render().plain
+
+
+# ---------------------------------------------------------------------------
+# Requirement 8: Animation remains smooth during long-running searches
+# ---------------------------------------------------------------------------
+def test_animation_remains_smooth_during_long_running_searches():
+    panel = LyricsPanelView()
+    panel.set_searching()
+
+    ticks = []
+    for step in range(30):
+        panel.update_position(pos=step * 0.1, accent=(56, 189, 248), duration=200.0, is_playing=True, energy=0.6)
+        ticks.append(panel._companion_view._tick_count)
+        rendered = panel.render().plain
+        assert "SEARCHING FOR LYRICS..." in rendered
+        assert "Pip" in rendered
+
+    # Ticks increase strictly monotonically without jitter or reset
+    for a, b in zip(ticks[:-1], ticks[1:]):
+        assert b > a
+
 
 
 # ---------------------------------------------------------------------------

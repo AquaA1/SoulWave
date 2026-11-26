@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from rich.text import Text
 from rich.style import Style
 from textual.widget import Widget
@@ -249,6 +249,8 @@ class CompanionDanceView(Widget):
         self.energy: float = 0.0
         self.accent_color: RGB = (56, 189, 248)
         self._tick_count: int = 0
+        self.status_message: Optional[str] = None
+        self.status_subtitle: Optional[str] = None
 
     def set_track_transition(self, active: bool) -> None:
         """Inform companions of an in-progress track transition."""
@@ -340,8 +342,22 @@ class CompanionDanceView(Widget):
         pad_str = " " * left_pad
         spacer = " " * gap
 
-        # Optional top breathing space if height allows
-        if height >= 10:
+        # Optional top breathing space or status message
+        if self.status_message:
+            msg_str = f" {self.status_message} "
+            m_left_pad = max(0, (width - len(msg_str)) // 2)
+            if "SEARCHING" in self.status_message.upper():
+                s_style = Style(color="rgb(148, 163, 184)", bold=True)
+            elif "NOT FOUND" in self.status_message.upper():
+                s_style = Style(color=f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})", bold=True)
+            else:
+                s_style = Style(color="rgb(203, 213, 225)", bold=True)
+            t.append(" " * m_left_pad)
+            t.append(msg_str, style=s_style)
+            if self.status_subtitle:
+                t.append(f" {self.status_subtitle}", style=Style(color="rgb(100, 116, 139)"))
+            t.append("\n")
+        elif height >= 10:
             t.append("\n")
 
         # Render 5 terminal rows (10 pixel rows)

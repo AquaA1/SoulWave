@@ -34,19 +34,25 @@ class LyricsPanelView(Widget):
         self.lines: List[LyricLine] = []
         self.plain_text: Optional[str] = None
         self.is_loading: bool = False
+        self.is_searching: bool = False
         self.is_waiting: bool = False
+        self.status_message: Optional[str] = None
+        self._not_found_timestamp: Optional[float] = None
+        self._not_found_duration: float = 2.5
         self.offset_seconds: float = 0.0
         self.current_position: float = 0.0
         self.duration_seconds: float = 0.0
         self.accent_color: RGB = (56, 189, 248)
 
-        # No-lyrics countdown and fallback dance state
+        # Persistent fallback companion dance view
+        self._companion_view: CompanionDanceView = CompanionDanceView()
+        self._dance_fallback_active: bool = True
+
+        # Countdown compatibility state
         self.is_countdown_active: bool = False
         self.countdown_seconds: int = 5
         self._countdown_start_time: Optional[float] = None
         self._on_countdown_complete: Optional[Callable[[], None]] = None
-        self._dance_fallback_active: bool = False
-        self._companion_view: Optional[CompanionDanceView] = None
 
         # Replay prevention state
         self._has_reached_end: bool = False
@@ -56,25 +62,50 @@ class LyricsPanelView(Widget):
         on_complete: Optional[Callable[[], None]] = None,
         countdown_seconds: int = 5,
     ) -> None:
-        """Starts a visible smooth countdown before switching to the mascot dance."""
-        self.cancel_countdown()
-        self.is_loading = False
-        self.lines = []
-        self.plain_text = None
-        self.is_countdown_active = True
-        self.countdown_seconds = countdown_seconds
-        self._countdown_start_time = time.monotonic()
-        self._on_countdown_complete = on_complete
-        self._dance_fallback_active = False
-        self._has_reached_end = False
-        self.refresh()
+        """Starts fallback dance (compatibility helper)."""
+        self.set_not_found(duration=float(countdown_seconds))
+        if on_complete:
+            on_complete()
 
     def cancel_countdown(self) -> None:
-        """Cancels any pending no-lyrics countdown."""
+        """Cancels any pending countdown or status message timer."""
         self.is_countdown_active = False
         self._countdown_start_time = None
         self._on_countdown_complete = None
         self.countdown_seconds = 5
+
+    def set_searching(self) -> None:
+        """Immediately displays the group dance animation while searching for lyrics."""
+        self.cancel_countdown()
+        self._has_reached_end = False
+        self.is_loading = True
+        self.is_searching = True
+        self.is_waiting = False
+        self.status_message = "SEARCHING FOR LYRICS..."
+        self._not_found_timestamp = None
+        self.lines = []
+        self.plain_text = None
+        self._companion_view.status_message = self.status_message
+        self._companion_view.status_subtitle = None
+        self.refresh()
+
+    def set_loading(self) -> None:
+        """Immediately displays group dance with searching indicator."""
+        self.set_searching()
+
+    def set_not_found(self, duration: float = 2.5, status_text: str = "LYRICS NOT FOUND") -> None:
+        """Briefly displays 'LYRICS NOT FOUND' at the top, then continues the group dance."""
+        self.cancel_countdown()
+        self._has_reached_end = False
+        self.is_loading = False
+        self.is_searching = False
+        self.is_waiting = False
+        self.lines = []
+        self.plain_text = None
+        self.status_message = status_text
+        self._not_found_timestamp = time.monotonic() + duration
+        self._companion_view.status_message = self.status_message
+        self._companion_view.status_subtitle = "(No lyrics found for this track)"
         self.refresh()
 
     def set_lyrics(
@@ -85,61 +116,68 @@ class LyricsPanelView(Widget):
         duration: float = 0.0,
     ) -> None:
         self.cancel_countdown()
-        self._dance_fallback_active = False
         self._has_reached_end = False
         self.offset_seconds = offset
         self.is_loading = False
+        self.is_searching = False
+        self._not_found_timestamp = None
         if duration > 0.0:
             self.duration_seconds = duration
+
         if synced_lrc:
             self.lines = LRCParser.parse(synced_lrc)
             self.plain_text = None
+            self.status_message = None
+            self._companion_view.status_message = None
+            self._companion_view.status_subtitle = None
         elif plain_lyrics:
             self.lines = []
             self.plain_text = plain_lyrics
+            self.status_message = None
+            self._companion_view.status_message = None
+            self._companion_view.status_subtitle = None
         else:
             self.lines = []
             self.plain_text = None
+            if not self.is_waiting:
+                self.set_not_found()
+            else:
+                self.status_message = None
+                self._companion_view.status_message = None
+                self._companion_view.status_subtitle = None
         self.refresh()
 
-    def set_loading(self) -> None:
-        self.cancel_countdown()
-        self._dance_fallback_active = False
-        self._has_reached_end = False
-        self.is_loading = True
-        self.lines = []
-        self.plain_text = None
-        self.refresh()
-
-    def update_position(self, pos: float, accent: RGB, duration: float = 0.0) -> None:
+    def update_position(
+        self,
+        pos: float,
+        accent: RGB,
+        duration: float = 0.0,
+        is_playing: bool = True,
+        is_paused: bool = False,
+        energy: float = 0.0,
+    ) -> None:
         self.current_position = max(0.0, pos)
         self.accent_color = accent
         if duration > 0.0:
             self.duration_seconds = duration
 
-        # Progress countdown if active
-        if self.is_countdown_active and self._countdown_start_time is not None:
-            elapsed = time.monotonic() - self._countdown_start_time
-            rem = max(1, 5 - int(elapsed))
-            if elapsed >= 5.0:
-                self.is_countdown_active = False
-                self._dance_fallback_active = True
-                cb = self._on_countdown_complete
-                self._on_countdown_complete = None
-                if cb:
-                    cb()
-            elif rem != self.countdown_seconds:
-                self.countdown_seconds = rem
+        # Auto-hide LYRICS NOT FOUND after specified duration (around 2-3 seconds)
+        if self._not_found_timestamp is not None:
+            if time.monotonic() >= self._not_found_timestamp:
+                self._not_found_timestamp = None
+                if self.status_message and "NOT FOUND" in self.status_message.upper():
+                    self.status_message = None
+                    self._companion_view.status_message = None
+                    self._companion_view.status_subtitle = None
 
-        # Animate fallback mascot if active
-        if self._dance_fallback_active:
-            if not self._companion_view:
-                self._companion_view = CompanionDanceView()
+        # When lyrics are not available, update and animate companion dance view
+        if not self.lines and not self.plain_text:
+            self._companion_view.status_message = self.status_message
             self._companion_view.update_state(
-                is_playing=True,
-                is_paused=False,
+                is_playing=is_playing,
+                is_paused=is_paused,
                 accent=self.accent_color,
-                energy=0.5,
+                energy=energy,
             )
 
         self.refresh()
@@ -152,52 +190,24 @@ class LyricsPanelView(Widget):
     def render(self) -> Text:
         t = Text()
         height = max(5, getattr(self, "_test_height", self.size.height if self.size.height > 0 else 12))
+        width = max(24, getattr(self, "_test_width", self.size.width if self.size.width > 0 else 40))
         max_visible_lines = height
 
-        # 1. Dance fallback state
-        if self._dance_fallback_active:
-            if not self._companion_view:
-                self._companion_view = CompanionDanceView()
-            if hasattr(self, "_test_height"):
-                self._companion_view._test_height = self._test_height
-            if hasattr(self, "_test_width"):
-                self._companion_view._test_width = getattr(self, "_test_width", 40)
-            return self._companion_view.render()
-
-        # 2. Loading state
-        if self.is_loading:
+        # 1. Cold-start waiting state (no track playing on system)
+        if self.is_waiting and not self.lines and not self.plain_text and not self.is_searching:
             t.append("── LYRICS ──\n", style=Style(color="rgb(100, 116, 139)"))
-            t.append("\n  ✨ Looking up lyrics via syncedlyrics...", style=Style(color="rgb(148, 163, 184)"))
-            return t
-
-        # 3. No-lyrics countdown state
-        if self.is_countdown_active:
-            t.append("── NO LYRICS ──\n\n", style=Style(color="rgb(244, 114, 182)", bold=True))
-            t.append("  No lyrics found for this track ♡\n", style=Style(color="rgb(251, 207, 232)", bold=True))
-            t.append("  Take a little break and enjoy a dance with our Soul Souls!\n\n", style=Style(color="rgb(203, 213, 225)"))
-            acc_str = f"rgb({self.accent_color[0]},{self.accent_color[1]},{self.accent_color[2]})"
-            t.append("  The Soul Souls are getting ready to dance... ", style=Style(color="rgb(148, 163, 184)"))
-            t.append(f"{self.countdown_seconds}\n", style=Style(color=acc_str, bold=True))
-            return t
-
-        # 4. Empty lyrics with no active countdown
-        if not self.lines and not self.plain_text:
-            t.append("── LYRICS ──\n", style=Style(color="rgb(100, 116, 139)"))
-            if self.is_waiting:
-                if not is_mpris_available():
-                    hint = get_playerctl_install_hint()
-                    t.append("\n  ⚠️ 'playerctl' utility not found\n\n", style=Style(color="rgb(245, 158, 11)", bold=True))
-                    t.append("  Soulwave needs 'playerctl' to track songs and fetch lyrics.\n", style=Style(color="rgb(203, 213, 225)"))
-                    t.append(f"  To install: {hint}\n\n", style=Style(color="rgb(56, 189, 248)", bold=True))
-                    t.append("  (Or press 'd' to switch to built-in demo tracks with synced lyrics!)", style=Style(color="rgb(148, 163, 184)"))
-                else:
-                    t.append("\n  🎧 Waiting for media playback...\n\n", style=Style(color="rgb(148, 163, 184)", bold=True))
-                    t.append("  Start playing a song in Spotify, YouTube, or your media player", style=Style(color="rgb(100, 116, 139)"))
+            if not is_mpris_available():
+                hint = get_playerctl_install_hint()
+                t.append("\n  ⚠️ 'playerctl' utility not found\n\n", style=Style(color="rgb(245, 158, 11)", bold=True))
+                t.append("  Soulwave needs 'playerctl' to track songs and fetch lyrics.\n", style=Style(color="rgb(203, 213, 225)"))
+                t.append(f"  To install: {hint}\n\n", style=Style(color="rgb(56, 189, 248)", bold=True))
+                t.append("  (Or press 'd' to switch to built-in demo tracks with synced lyrics!)", style=Style(color="rgb(148, 163, 184)"))
             else:
-                t.append("\n  ♪ (No lyrics found for this track)", style=Style(color="rgb(100, 116, 139)"))
+                t.append("\n  🎧 Waiting for media playback...\n\n", style=Style(color="rgb(148, 163, 184)", bold=True))
+                t.append("  Start playing a song in Spotify, YouTube, or your media player", style=Style(color="rgb(100, 116, 139)"))
             return t
 
-        # 5. Synchronized LRC lyrics
+        # 2. Synchronized LRC lyrics
         if self.lines:
             offset_ms = int(round(self.offset_seconds * 1000))
             offset_badge = f" [Offset: {offset_ms:+d}ms]" if offset_ms != 0 else ""
@@ -301,5 +311,12 @@ class LyricsPanelView(Widget):
                     t.append(f"   {line_str}\n", style=past_style)
                 else:
                     t.append(f"   {line_str}\n", style=future_style)
+
+        else:
+            # 3. Permanent Fallback: Group Dance Animation (when lyrics are not available, searching, or not found)
+            self._companion_view._test_height = height
+            self._companion_view._test_width = width
+            self._companion_view.status_message = self.status_message
+            return self._companion_view.render()
 
         return t

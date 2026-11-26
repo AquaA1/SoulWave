@@ -49,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --version|-v)
             if [ $# -lt 2 ] || [[ "$2" == --* ]] || [[ "$2" == -* ]]; then
-                log_error "Option '$1' requires a version argument (e.g. v0.1.9)."
+                log_error "Option '$1' requires a version argument (e.g. v0.2.0)."
                 exit 1
             fi
             TARGET_VERSION="$2"
@@ -109,7 +109,7 @@ OPTIONS:
     --binary             Install standalone binary executable (default: universal, no Python required)
     --rpm                Install native RPM package (Fedora, RHEL, openSUSE)
     --wheel              Install via Python wheel into isolated virtual environment
-    --version, -v <tag>  Install specific release tag (e.g. v0.1.9)
+    --version, -v <tag>  Install specific release tag (e.g. v0.2.0)
     --file, -f <path>    Install from a local standalone binary, .rpm, or .whl file
     --user               Install into user directory (~/.local/bin, rootless, default)
     --system             Install into system directory (/usr/local/bin or RPM)
