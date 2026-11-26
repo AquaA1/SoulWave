@@ -113,7 +113,7 @@ class MPRISPlayer(BasePlayer):
         self._signal_matches: List = []
 
         # Background async worker & GLib loop
-        self._cmd_queue: queue.Queue = queue.Queue()
+        self._cmd_queue: queue.Queue = queue.Queue(maxsize=32)
         self._worker_thread: Optional[threading.Thread] = None
         self._loop = None
         self._loop_thread: Optional[threading.Thread] = None
@@ -142,14 +142,21 @@ class MPRISPlayer(BasePlayer):
             if not self._init_dbus():
                 self.use_dbus = False
 
-        if not self.use_dbus and self._playerctl_bin:
+        if not self.use_dbus:
             self._running = True
-            self._poll_thread = threading.Thread(
-                target=self._playerctl_poll_loop,
+            self._worker_thread = threading.Thread(
+                target=self._worker_loop,
                 daemon=True,
-                name="MPRIS-PlayerctlPoll",
+                name="MPRIS-Worker",
             )
-            self._poll_thread.start()
+            self._worker_thread.start()
+            if self._playerctl_bin:
+                self._poll_thread = threading.Thread(
+                    target=self._playerctl_poll_loop,
+                    daemon=True,
+                    name="MPRIS-PlayerctlPoll",
+                )
+                self._poll_thread.start()
 
         # Initial state fetch
         self.get_state()
@@ -335,22 +342,29 @@ class MPRISPlayer(BasePlayer):
 
             cmd_type, args = item
             try:
+                if not self._running:
+                    continue
+
                 if cmd_type == "seek":
-                    offset_us, desired_pos, seq, epoch = args
-                    # If track changed before command ran, discard obsolete seek
+                    offset_us, desired_pos, seq, epoch, offset_s = args
                     with self._lock:
-                        if epoch != self._track_epoch:
+                        if not self._running or epoch != self._track_epoch:
                             continue
 
                     t0 = time.monotonic()
                     err = None
-                    try:
-                        self._player_iface.Seek(dbus.Int64(offset_us))
-                    except dbus.DBusException as e:
-                        err = str(e)
-                        self._handle_dbus_error(e)
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.Seek(dbus.Int64(offset_us))
+                        except dbus.DBusException as e:
+                            err = str(e)
+                            self._handle_dbus_error(e)
+                    else:
+                        arg = f"{offset_s:.1f}+" if offset_s >= 0 else f"{abs(offset_s):.1f}-"
+                        res = self._run_cmd(["position", arg])
+                        if res is None and self._playerctl_bin:
+                            err = "playerctl position failed"
 
-                    # Verify resulting position
                     self._verify_seek(
                         seek_type="seek",
                         target_pos=desired_pos,
@@ -359,23 +373,30 @@ class MPRISPlayer(BasePlayer):
                         t_start=t0,
                         immediate_err=err,
                     )
+                    self._notify_action()
 
                 elif cmd_type == "set_position":
                     track_id, pos_us, desired_pos, seq, epoch = args
                     with self._lock:
-                        if epoch != self._track_epoch:
+                        if not self._running or epoch != self._track_epoch:
+                            continue
+                        if seq < self._interpolator.get_seek_seq():
                             continue
 
                     t0 = time.monotonic()
                     err = None
-                    try:
-                        obj_path = dbus.ObjectPath(str(track_id))
-                        self._player_iface.SetPosition(obj_path, dbus.Int64(pos_us))
-                    except (dbus.DBusException, ValueError) as e:
-                        err = str(e)
-                        self._handle_dbus_error(e)
+                    if self.use_dbus and self._player_iface and track_id and str(track_id).startswith("/"):
+                        try:
+                            obj_path = dbus.ObjectPath(str(track_id))
+                            self._player_iface.SetPosition(obj_path, dbus.Int64(pos_us))
+                        except (dbus.DBusException, ValueError) as e:
+                            err = str(e)
+                            self._handle_dbus_error(e)
+                    else:
+                        res = self._run_cmd(["position", f"{desired_pos:.1f}"])
+                        if res is None and self._playerctl_bin:
+                            err = "playerctl position failed"
 
-                    # Verify resulting position
                     self._verify_seek(
                         seek_type="set_position",
                         target_pos=desired_pos,
@@ -384,38 +405,103 @@ class MPRISPlayer(BasePlayer):
                         t_start=t0,
                         immediate_err=err,
                     )
+                    self._notify_action()
 
                 elif cmd_type == "play_pause":
-                    self._player_iface.PlayPause()
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.PlayPause()
+                        except Exception as e:
+                            logger.error("Error executing PlayPause: %s", e)
+                    else:
+                        self._run_cmd(["play-pause"])
+                        self._notify_action()
+
                 elif cmd_type == "play":
-                    self._player_iface.Play()
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.Play()
+                        except Exception as e:
+                            logger.error("Error executing Play: %s", e)
+                    else:
+                        self._run_cmd(["play"])
+                        self._notify_action()
+
                 elif cmd_type == "pause":
-                    self._player_iface.Pause()
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.Pause()
+                        except Exception as e:
+                            logger.error("Error executing Pause: %s", e)
+                    else:
+                        self._run_cmd(["pause"])
+                        self._notify_action()
+
                 elif cmd_type == "next":
-                    self._player_iface.Next()
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.Next()
+                        except Exception as e:
+                            logger.error("Error executing Next: %s", e)
+                    else:
+                        self._run_cmd(["next"])
+                        self._notify_action()
+
                 elif cmd_type == "previous":
-                    self._player_iface.Previous()
+                    if self.use_dbus and self._player_iface:
+                        try:
+                            self._player_iface.Previous()
+                        except Exception as e:
+                            logger.error("Error executing Previous: %s", e)
+                    else:
+                        self._run_cmd(["previous"])
+                        self._notify_action()
+
                 elif cmd_type == "set_volume":
                     vol = args[0]
-                    self._props_iface.Set(
-                        "org.mpris.MediaPlayer2.Player",
-                        "Volume",
-                        dbus.Double(vol),
-                    )
+                    if self.use_dbus and self._props_iface:
+                        try:
+                            self._props_iface.Set(
+                                "org.mpris.MediaPlayer2.Player",
+                                "Volume",
+                                dbus.Double(vol),
+                            )
+                        except Exception as e:
+                            logger.error("Error executing Volume Set: %s", e)
+                    else:
+                        self._run_cmd(["volume", f"{vol:.2f}"])
+                        self._notify_action()
+
                 elif cmd_type == "loop":
                     loop_val = args[0]
-                    self._props_iface.Set(
-                        "org.mpris.MediaPlayer2.Player",
-                        "LoopStatus",
-                        dbus.String(loop_val),
-                    )
+                    if self.use_dbus and self._props_iface:
+                        try:
+                            self._props_iface.Set(
+                                "org.mpris.MediaPlayer2.Player",
+                                "LoopStatus",
+                                dbus.String(loop_val),
+                            )
+                        except Exception as e:
+                            logger.error("Error executing LoopStatus Set: %s", e)
+                    else:
+                        self._run_cmd(["loop", loop_val])
+                        self._notify_action()
+
                 elif cmd_type == "shuffle":
                     shuf_val = args[0]
-                    self._props_iface.Set(
-                        "org.mpris.MediaPlayer2.Player",
-                        "Shuffle",
-                        dbus.Boolean(shuf_val),
-                    )
+                    if self.use_dbus and self._props_iface:
+                        try:
+                            self._props_iface.Set(
+                                "org.mpris.MediaPlayer2.Player",
+                                "Shuffle",
+                                dbus.Boolean(shuf_val),
+                            )
+                        except Exception as e:
+                            logger.error("Error executing Shuffle Set: %s", e)
+                    else:
+                        self._run_cmd(["shuffle", "Toggle"])
+                        self._notify_action()
+
             except Exception as e:
                 logger.error("Error executing %s command: %s", cmd_type, e)
                 if isinstance(e, dbus.DBusException):
@@ -735,6 +821,8 @@ class MPRISPlayer(BasePlayer):
                     break
 
                 with self._lock:
+                    if not self._running:
+                        break
                     prev_status = self._last_state.status
                     prev_track_id = self._last_state.metadata.track_id
                     prev_title = self._last_state.metadata.title
@@ -743,6 +831,8 @@ class MPRISPlayer(BasePlayer):
                 new_state = self._get_state_playerctl()
 
                 with self._lock:
+                    if not self._running:
+                        break
                     self._initialized = True
                     state_changed = (
                         new_state.status != prev_status
@@ -751,11 +841,14 @@ class MPRISPlayer(BasePlayer):
                         or new_state.metadata.artist != prev_artist
                     )
 
-                if state_changed and self.on_state_change:
-                    try:
-                        self.on_state_change()
-                    except Exception:
-                        pass
+                if state_changed:
+                    with self._lock:
+                        cb = self.on_state_change if self._running else None
+                    if cb:
+                        try:
+                            cb()
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.debug("Error in playerctl poll loop: %s", e)
 
@@ -800,6 +893,8 @@ class MPRISPlayer(BasePlayer):
             if status_out:
                 status = self._parse_status(status_out)
                 with self._lock:
+                    if not self._running:
+                        return PlayerState(status=PlaybackStatus.DISCONNECTED)
                     now = time.monotonic()
                     if now < self._status_hold_until and self._status_hold_target is not None:
                         if status != self._status_hold_target:
@@ -874,6 +969,8 @@ class MPRISPlayer(BasePlayer):
             volume_val = 1.0
 
         with self._lock:
+            if not self._running:
+                return PlayerState(status=PlaybackStatus.DISCONNECTED)
             now = time.monotonic()
             if now < self._status_hold_until and self._status_hold_target is not None:
                 if status != self._status_hold_target:
@@ -960,7 +1057,7 @@ class MPRISPlayer(BasePlayer):
             self._poll_wake_event.set()
 
     def seek(self, offset_seconds: float) -> None:
-        """Relative seek: updates UI immediately and queues D-Bus Seek call."""
+        """Relative seek: updates UI immediately and queues Seek call."""
         can_seek, reason = self._can_seek_check()
         if not can_seek:
             logger.info("Seek rejected: %s", reason)
@@ -973,17 +1070,11 @@ class MPRISPlayer(BasePlayer):
             seq = self._interpolator.get_seek_seq()
 
         offset_us = int(round(offset_seconds * 1_000_000.0))
-
-        if self.use_dbus and self._running:
-            self._cmd_queue.put(("seek", (offset_us, desired, seq, self._track_epoch)))
-        else:
-            # playerctl fallback: OFFSET must end in + or - (e.g. 5.0+ or 5.0-)
-            if offset_seconds >= 0:
-                arg = f"{offset_seconds:.1f}+"
-            else:
-                arg = f"{abs(offset_seconds):.1f}-"
-            self._run_cmd(["position", arg])
-            self._notify_action()
+        if self._running:
+            try:
+                self._cmd_queue.put_nowait(("seek", (offset_us, desired, seq, self._track_epoch, offset_seconds)))
+            except queue.Full:
+                logger.warning("Command queue full, dropping seek")
 
     def set_position(self, target_seconds: float) -> None:
         """Absolute seek: validates track identity, updates UI and queues SetPosition."""
@@ -1007,12 +1098,11 @@ class MPRISPlayer(BasePlayer):
             seq = self._interpolator.get_seek_seq()
 
         pos_us = int(round(clamped * 1_000_000.0))
-
-        if self.use_dbus and self._running and track_id and str(track_id).startswith("/"):
-            self._cmd_queue.put(("set_position", (track_id, pos_us, clamped, seq, self._track_epoch)))
-        else:
-            self._run_cmd(["position", f"{clamped:.1f}"])
-            self._notify_action()
+        if self._running:
+            try:
+                self._cmd_queue.put_nowait(("set_position", (track_id, pos_us, clamped, seq, self._track_epoch)))
+            except queue.Full:
+                logger.warning("Command queue full, dropping set_position")
 
     def play_pause(self) -> None:
         with self._lock:
@@ -1029,16 +1119,11 @@ class MPRISPlayer(BasePlayer):
                 self._last_state.metadata.duration_seconds,
             )
 
-        if self.use_dbus and self._player_iface:
+        if self._running:
             try:
-                self._player_iface.PlayPause()
-            except Exception as e:
-                logger.error("Error executing PlayPause: %s", e)
-        elif self.use_dbus and self._running:
-            self._cmd_queue.put(("play_pause", ()))
-        else:
-            self._run_cmd(["play-pause"])
-            self._notify_action()
+                self._cmd_queue.put_nowait(("play_pause", ()))
+            except queue.Full:
+                logger.warning("Command queue full, dropping play_pause")
 
     def play(self) -> None:
         with self._lock:
@@ -1050,16 +1135,11 @@ class MPRISPlayer(BasePlayer):
                 PlaybackStatus.PLAYING,
                 self._last_state.metadata.duration_seconds,
             )
-        if self.use_dbus and self._player_iface:
+        if self._running:
             try:
-                self._player_iface.Play()
-            except Exception as e:
-                logger.error("Error executing Play: %s", e)
-        elif self.use_dbus and self._running:
-            self._cmd_queue.put(("play", ()))
-        else:
-            self._run_cmd(["play"])
-            self._notify_action()
+                self._cmd_queue.put_nowait(("play", ()))
+            except queue.Full:
+                logger.warning("Command queue full, dropping play")
 
     def pause(self) -> None:
         with self._lock:
@@ -1071,50 +1151,35 @@ class MPRISPlayer(BasePlayer):
                 PlaybackStatus.PAUSED,
                 self._last_state.metadata.duration_seconds,
             )
-        if self.use_dbus and self._player_iface:
+        if self._running:
             try:
-                self._player_iface.Pause()
-            except Exception as e:
-                logger.error("Error executing Pause: %s", e)
-        elif self.use_dbus and self._running:
-            self._cmd_queue.put(("pause", ()))
-        else:
-            self._run_cmd(["pause"])
-            self._notify_action()
+                self._cmd_queue.put_nowait(("pause", ()))
+            except queue.Full:
+                logger.warning("Command queue full, dropping pause")
 
     def next_track(self) -> None:
-        if self.use_dbus and self._player_iface:
+        if self._running:
             try:
-                self._player_iface.Next()
-            except Exception as e:
-                logger.error("Error executing Next: %s", e)
-        elif self.use_dbus and self._running:
-            self._cmd_queue.put(("next", ()))
-        else:
-            self._run_cmd(["next"])
-            self._notify_action()
+                self._cmd_queue.put_nowait(("next", ()))
+            except queue.Full:
+                logger.warning("Command queue full, dropping next")
 
     def previous_track(self) -> None:
-        if self.use_dbus and self._player_iface:
+        if self._running:
             try:
-                self._player_iface.Previous()
-            except Exception as e:
-                logger.error("Error executing Previous: %s", e)
-        elif self.use_dbus and self._running:
-            self._cmd_queue.put(("previous", ()))
-        else:
-            self._run_cmd(["previous"])
-            self._notify_action()
+                self._cmd_queue.put_nowait(("previous", ()))
+            except queue.Full:
+                logger.warning("Command queue full, dropping previous")
 
     def set_volume(self, target_volume: float) -> None:
         clamped = max(0.0, min(1.0, target_volume))
         with self._lock:
             self._last_state.volume = clamped
-        if self.use_dbus and self._running:
-            self._cmd_queue.put(("set_volume", (clamped,)))
-        else:
-            self._run_cmd(["volume", f"{clamped:.2f}"])
-            self._notify_action()
+        if self._running:
+            try:
+                self._cmd_queue.put_nowait(("set_volume", (clamped,)))
+            except queue.Full:
+                logger.warning("Command queue full, dropping set_volume")
 
     def cycle_loop(self) -> None:
         order = [LoopStatus.NONE, LoopStatus.TRACK, LoopStatus.PLAYLIST]
@@ -1125,11 +1190,11 @@ class MPRISPlayer(BasePlayer):
             self._last_state.loop = nxt
 
         val_str = {LoopStatus.NONE: "None", LoopStatus.TRACK: "Track", LoopStatus.PLAYLIST: "Playlist"}[nxt]
-        if self.use_dbus and self._running:
-            self._cmd_queue.put(("loop", (val_str,)))
-        else:
-            self._run_cmd(["loop", val_str])
-            self._notify_action()
+        if self._running:
+            try:
+                self._cmd_queue.put_nowait(("loop", (val_str,)))
+            except queue.Full:
+                logger.warning("Command queue full, dropping loop")
 
     def toggle_shuffle(self) -> None:
         with self._lock:
@@ -1137,11 +1202,11 @@ class MPRISPlayer(BasePlayer):
             self._last_state.shuffle = nxt
 
         shuf_bool = nxt == ShuffleStatus.ON
-        if self.use_dbus and self._running:
-            self._cmd_queue.put(("shuffle", (shuf_bool,)))
-        else:
-            self._run_cmd(["shuffle", "Toggle"])
-            self._notify_action()
+        if self._running:
+            try:
+                self._cmd_queue.put_nowait(("shuffle", (shuf_bool,)))
+            except queue.Full:
+                logger.warning("Command queue full, dropping shuffle")
 
     def _run_cmd(self, args: List[str], timeout: float = 1.0) -> Optional[str]:
         """Runs playerctl command safely as fallback."""
@@ -1169,9 +1234,19 @@ class MPRISPlayer(BasePlayer):
             pass
         return None
 
+    def drain_commands(self) -> None:
+        """Wait for queued playback commands to finish processing."""
+        try:
+            self._cmd_queue.join()
+        except Exception:
+            pass
+
     def close(self) -> None:
         """Release persistent D-Bus connections, signal matches, worker thread, and poll thread."""
-        self._running = False
+        with self._lock:
+            self._running = False
+            self.on_state_change = None
+
         self._poll_wake_event.set()
         if self._poll_thread and self._poll_thread.is_alive():
             self._poll_thread.join(timeout=0.5)

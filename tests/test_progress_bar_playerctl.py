@@ -1,5 +1,7 @@
 """Unit and integration tests for progress bar and playerctl MPRIS fallback."""
 
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -89,7 +91,8 @@ class TestProgressBarPlayerctl(unittest.TestCase):
             self.player._last_state.can_seek = True
 
             self.player.seek(5.0)
-            mock_cmd.assert_called_with(["position", "5.0+"])
+            self.player.drain_commands()
+            mock_cmd.assert_any_call(["position", "5.0+"])
 
         # Backward seek (-5s) must pass "5.0-" NOT "-5.0"
         with patch.object(self.player, "_run_cmd") as mock_cmd:
@@ -98,7 +101,8 @@ class TestProgressBarPlayerctl(unittest.TestCase):
             self.player._last_state.can_seek = True
 
             self.player.seek(-5.0)
-            mock_cmd.assert_called_with(["position", "5.0-"])
+            self.player.drain_commands()
+            mock_cmd.assert_any_call(["position", "5.0-"])
 
     def test_set_position_works_without_track_id_in_cli_mode(self):
         with patch.object(self.player, "_run_cmd") as mock_cmd:
@@ -108,7 +112,8 @@ class TestProgressBarPlayerctl(unittest.TestCase):
             self.player._last_state.can_seek = True
 
             self.player.set_position(90.0)
-            mock_cmd.assert_called_with(["position", "90.0"])
+            self.player.drain_commands()
+            mock_cmd.assert_any_call(["position", "90.0"])
 
     def test_get_state_playerctl_non_blocking_cached(self):
         with patch.object(self.player, "_run_cmd") as mock_cmd:
@@ -195,6 +200,116 @@ class TestProgressBarPlayerctl(unittest.TestCase):
         app.mascot_view = MagicMock()
         app._animation_tick()
         app.progress_bar_view.update_progress.assert_called_once_with(42.5, 180.0, app.accent_color)
+
+    def test_close_player_while_poll_in_flight_prevents_callback_and_state_update(self):
+        import threading
+        import time
+        in_poll_event = threading.Event()
+        release_poll_event = threading.Event()
+        callback_called = []
+
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        mock_output = (
+            f"Playing{delim}Slow Artist{delim}Slow Track{delim}Slow Album{delim}"
+            f"200{delim}50{delim}1.0{delim}None{delim}false{delim}art{delim}id_slow"
+        )
+
+        def slow_run_cmd(args, **kwargs):
+            if args[0] == "metadata":
+                in_poll_event.set()
+                release_poll_event.wait(timeout=1.0)
+                return mock_output
+            return None
+
+        # Create player with callback
+        p = MPRISPlayer(
+            player_name="spotify",
+            use_dbus=False,
+            on_state_change=lambda: callback_called.append(True),
+        )
+        p._playerctl_bin = "/usr/bin/playerctl"
+        original_state = p._last_state
+
+        with patch.object(p, "_run_cmd", side_effect=slow_run_cmd):
+            # Wake background poll
+            p._poll_wake_event.set()
+            # Wait for poll thread to enter _run_cmd
+            self.assertTrue(in_poll_event.wait(timeout=1.0))
+
+            # Now close player while poll is in flight
+            p.close()
+            # Allow slow poll to return
+            release_poll_event.set()
+            time.sleep(0.05)
+
+        # Verification:
+        # 1. Callback must NOT have fired after closure
+        self.assertEqual(len(callback_called), 0)
+        # 2. Cached state must not have updated to the slow track
+        self.assertNotEqual(p._last_state.metadata.title, "Slow Track")
+        self.assertFalse(p._running)
+
+    def test_rapid_consecutive_seek_commands_bounded_queue_coalescing(self):
+        # Initial state setup
+        self.player._last_state.status = PlaybackStatus.PLAYING
+        self.player._last_state.metadata.duration_seconds = 200.0
+        self.player._last_state.can_seek = True
+        self.player._interpolator.sync(10.0, PlaybackStatus.PLAYING, 200.0)
+
+        executed_cmds = []
+
+        def capture_cmd(args, **kwargs):
+            executed_cmds.append(args)
+            return "OK"
+
+        with patch.object(self.player, "_run_cmd", side_effect=capture_cmd):
+            # 1. Verify queue bounding with 40 rapid seeks (maxsize is 32)
+            for _ in range(40):
+                self.player.seek(1.0)
+
+            # Queue capacity check: must not exceed bounded limit (32)
+            self.assertLessEqual(self.player._cmd_queue.qsize(), 32)
+
+            self.player.drain_commands()
+            self.assertGreater(len(executed_cmds), 0)
+
+            # 2. Verify absolute scrubbing coalescing (set_position)
+            executed_cmds.clear()
+            gate = threading.Event()
+
+            def gated_capture(args, **kwargs):
+                executed_cmds.append(args)
+                gate.wait(timeout=1.0)
+                return "OK"
+
+            with patch.object(self.player, "_run_cmd", side_effect=gated_capture):
+                self.player.set_position(50.0)
+                time.sleep(0.02)
+                self.player.set_position(55.0)
+                self.player.set_position(60.0)
+                gate.set()
+                self.player.drain_commands()
+                # Intermediates should coalesce; 55.0 skipped in favor of 60.0
+                self.assertLessEqual(len(executed_cmds), 2)
+                self.assertEqual(executed_cmds[-1], ["position", "60.0"])
+
+    def test_status_hold_expiration_allows_player_status_updates(self):
+        import time
+        delim = MPRISPlayer.FORMAT_DELIMITER
+        mock_output = (
+            f"Playing{delim}Artist{delim}Title{delim}Album{delim}"
+            f"200{delim}50{delim}1.0{delim}None{delim}false{delim}art{delim}id1"
+        )
+        with patch.object(self.player, "_run_cmd", return_value=mock_output):
+            with self.player._lock:
+                # Hold window has expired (in the past)
+                self.player._last_state.status = PlaybackStatus.PAUSED
+                self.player._status_hold_until = time.monotonic() - 0.5
+                self.player._status_hold_target = PlaybackStatus.PAUSED
+
+            # Poll returns Playing; since hold is expired, Playing should be accepted
+            new_state = self.player._get_state_playerctl()
+            self.assertEqual(new_state.status, PlaybackStatus.PLAYING)
 
 
 class TestProgressBarWidget(unittest.TestCase):
